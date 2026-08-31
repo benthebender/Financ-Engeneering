@@ -1,0 +1,10 @@
+Metric,Value
+Total curve nodes,10
+Earliest market-data date,2015-11-19
+Latest market-data date,2026-08-31
+Minimum observations at a node,2755
+Maximum observations at a node,2782
+PCA common observations,2730
+PCA first 3 factors cumulative variance,0.9934186568087705
+Monte Carlo simulations,100000
+Base duration assumption,5.0
