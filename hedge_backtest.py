@@ -15,23 +15,20 @@ numerics come from ``var_core.py``; the swap is priced with the same single-curv
 used here so 20k scenarios x hundreds of dates run in seconds; it is checked
 against ``forward_swap.forward_swap_pv`` at import).
 
-Book: EUR 14bn floating-rate exposure.  P&L sign follows the standing pipeline
-(``Final version.py``): the book GAINS when rates rise (mark-to-market of the
-liability falls).  Under that convention the risk-reducing hedge is a RECEIVER
-swap (receive fixed / pay float -> loses when rates rise); the PAYER swap adds to
-the exposure and is kept only for comparison.  Six swaps, struck at fair on the
+Book: EUR 14bn of FLOATING-RATE DEBT -- we are the borrower.  Rates rise ->
+higher coupons -> LOSS.  The risk-reducing hedge is a PAYER swap (pay fixed /
+receive float -> gains when rates rise).  Four payer swaps, struck at fair on the
 first backtest date and held:
 
-    irs_recv_5y,  irs_recv_10y     spot receiver IRS  (the "A-IRS" / A-IRA.py)
-    fwd_recv_2y5y, fwd_recv_5y5y   forward-starting receiver swap (forward_swap.py)
-    payer_5y, payer_10y           comparison only
+    irs_pay_5y,  irs_pay_10y     spot payer IRS  (receiver leg priced in A-IRA.py)
+    fwd_pay_2y5y, fwd_pay_5y5y   forward-starting payer swap (forward_swap.py)
 
-Debt P&L model (pipeline duration proxy):
+Debt P&L model (pipeline duration proxy, borrower sign):
 
     unhedged_pnl = DEBT_SIGN * DEBT_NOTIONAL * DEBT_DURATION * mean(delta_curve)
 
-with ``DEBT_SIGN = +1`` (pipeline MV view).  Set ``DEBT_SIGN = -1`` for the
-cash-flow / funding view, where the PAYER swap becomes the hedge instead.
+with ``DEBT_SIGN = -1``.  (Final version.py uses +1, a mark-to-market-of-the-
+liability view; that is wrong for floating debt -- see the config comment.)
 
 Outputs
 -------
@@ -42,11 +39,11 @@ output/charts/13_hedge_savings.png
     cumulative realised 10-day P&L: unhedged vs hedged with each swap.
 output/charts/14_hedged_book_<name>.png  (one per swap)
     per-swap detail: hedged-book VaR (3 methods) + cumulative realised P&L.
-output/charts/15_var_method_focus_{unhedged,irs_recv_5y}.png
+output/charts/15_var_method_focus_{unhedged,irs_pay_5y}.png
     3 panels, one per VaR method: all three VaR lines over time with that
     method highlighted -- reads how conservative / loose each method is.
 output/charts/16_spot_irs_vs_forward_swap.png
-    head-to-head: unhedged vs spot "A-IRS" vs the two forward swaps --
+    head-to-head: unhedged vs spot payer IRS vs the two forward payer swaps --
     rolling VaR and cumulative realised P&L.
 output/results/hedge_backtest_breaches.csv     exceptions + Kupiec / Christoffersen
 output/results/hedge_backtest_savings.csv      what the hedge would have saved
@@ -75,16 +72,17 @@ from forward_swap import forward_swap_pv    # noqa: E402
 # --------------------------------------------------------------------------- #
 # config
 # --------------------------------------------------------------------------- #
-# EUR 14bn floating-rate exposure.  P&L sign follows the standing pipeline
-# (Final version.py):  unhedged_pnl = +DEBT_NOTIONAL * DEBT_DURATION * mean(dcurve)
-# i.e. the book GAINS when rates rise (mark-to-market of the liability falls).
-# Under that convention the RECEIVER swap (receive fixed -> loses when rates
-# rise) is the risk-reducing hedge; the PAYER swap adds to the exposure.
-# (If you instead mean cash-flow / funding risk -- rising coupons hurt -- set
-#  DEBT_SIGN = -1.0 and the PAYER swap becomes the hedge.)
+# EUR 14bn of FLOATING-RATE DEBT -- we are the BORROWER, paying floating coupons.
+# Rates rise -> higher interest expense -> LOSS.  So:
+#     unhedged_pnl = -DEBT_NOTIONAL * DEBT_DURATION * mean(dcurve)      (DEBT_SIGN = -1)
+# The risk-reducing hedge is a PAYER swap (pay fixed / receive float -> gains when
+# rates rise, offsetting the debt).  A receiver swap would ADD to the loss.
+# (The standing pipeline Final version.py uses +D*dy -- a mark-to-market-of-the-
+#  liability view.  That is wrong for floating debt, whose MV barely moves and
+#  whose real risk is the coupon.  DEBT_SIGN = -1 is the cash-flow view.)
 DEBT_NOTIONAL = 14_000_000_000
 DEBT_DURATION = 5.0                         # kept consistent with Final version.py
-DEBT_SIGN = +1.0                            # +1: pipeline MV view (receiver hedges)
+DEBT_SIGN = -1.0                            # -1: floating borrower, rates up -> loss
 
 HEDGE_NOTIONAL = 14_000_000_000             # per swap; adjust here
 
@@ -115,26 +113,22 @@ class Instrument:
         return f"{s} {self.position}"
 
 
-# "A-IRS": the plain spot-start receiver IRS (as in "A - IRA.py").
+# spot-start payer IRS -- the borrower's hedge (pay fixed / receive float).
+# (The "A - IRA.py" case sheet prices the receiver leg of the same swap.)
 SPOT_IRS = [
-    Instrument("irs_recv_5y", 5, "receiver", start=0),
-    Instrument("irs_recv_10y", 10, "receiver", start=0),
+    Instrument("irs_pay_5y", 5, "payer", start=0),
+    Instrument("irs_pay_10y", 10, "payer", start=0),
 ]
-# "forward swap we set up" (Data/forward_swap.py): forward-starting receiver swaps.
+# "forward swap we set up" (Data/forward_swap.py): forward-starting payer swaps.
 FORWARD_SWAPS = [
-    Instrument("fwd_recv_2y5y", 5, "receiver", start=2),
-    Instrument("fwd_recv_5y5y", 5, "receiver", start=5),
+    Instrument("fwd_pay_2y5y", 5, "payer", start=2),
+    Instrument("fwd_pay_5y5y", 5, "payer", start=5),
 ]
-# payer swaps kept purely for comparison (they add exposure under DEBT_SIGN=+1).
-PAYERS = [
-    Instrument("payer_5y", 5, "payer", start=0),
-    Instrument("payer_10y", 10, "payer", start=0),
-]
-INSTRUMENTS = SPOT_IRS + FORWARD_SWAPS + PAYERS
+INSTRUMENTS = SPOT_IRS + FORWARD_SWAPS
 METHODS = ["Delta-Normal", "Monte Carlo", "PCA + GARCH"]
 
 # the four books compared head-to-head in chart 16
-COMPARE_BOOKS = ["unhedged", "irs_recv_5y", "fwd_recv_2y5y", "fwd_recv_5y5y"]
+COMPARE_BOOKS = ["unhedged", "irs_pay_5y", "fwd_pay_2y5y", "fwd_pay_5y5y"]
 
 
 # --------------------------------------------------------------------------- #
@@ -432,14 +426,12 @@ def plot_var_panels(var_ts: pd.DataFrame, out_path: Path) -> None:
 def plot_savings(realized: pd.DataFrame, out_path: Path) -> None:
     """Cumulative realised P&L: unhedged vs hedged with each swap."""
     cum = realized.cumsum() / 1e6
-    fam_ls = {"spot": "-", "fwd": (0, (4, 1, 1, 1)), "payer": "--"}
-    palette = ["#1f77b4", "#0b3d91", "#17a2b8", "#2ca02c", "#d62728", "#e6844a"]
+    palette = ["#1f77b4", "#0b3d91", "#2ca02c", "#d62728", "#e6844a", "#9467bd"]
     fig, ax = plt.subplots(figsize=(13, 6))
     ax.plot(cum.index, cum["unhedged"], color="#777777", lw=2.4, label="unhedged")
     for inst, c in zip(INSTRUMENTS, palette):
-        fam = "payer" if inst.position == "payer" else (
-            "fwd" if inst.start else "spot")
-        ax.plot(cum.index, cum[inst.name], color=c, lw=1.8, ls=fam_ls[fam],
+        ax.plot(cum.index, cum[inst.name], color=c, lw=1.8,
+                ls="-" if inst.start == 0 else (0, (4, 1, 1, 1)),
                 label=f"hedged with {inst.name}")
     ax.axhline(0, color="k", lw=0.8)
     ax.set_title("Cumulative realised 10-day P&L over the backtest "
@@ -536,8 +528,8 @@ def plot_instrument_comparison(var_ts: pd.DataFrame, realized: pd.DataFrame,
     Same colour per book on both panels.
     """
     books = [b for b in COMPARE_BOOKS if b in set(var_ts.book)]
-    cols = {"unhedged": "#777777", "irs_recv_5y": "#1f77b4",
-            "fwd_recv_2y5y": "#2ca02c", "fwd_recv_5y5y": "#d62728"}
+    cols = {"unhedged": "#777777", "irs_pay_5y": "#1f77b4",
+            "fwd_pay_2y5y": "#2ca02c", "fwd_pay_5y5y": "#d62728"}
     fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(16, 5.6))
 
     d = var_ts[var_ts.method == method]
@@ -560,8 +552,8 @@ def plot_instrument_comparison(var_ts: pd.DataFrame, realized: pd.DataFrame,
     ax2.grid(alpha=0.3)
     ax2.legend(fontsize=8)
 
-    fig.suptitle("Hedging impact: spot IRS ('A-IRS') vs forward-starting swap",
-                 fontsize=13)
+    fig.suptitle("Hedging impact: spot payer IRS vs forward-starting payer swap "
+                 "(14bn floating borrower)", fontsize=13)
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     out_path.parent.mkdir(parents=True, exist_ok=True)
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
@@ -581,7 +573,7 @@ if __name__ == "__main__":
     for inst in INSTRUMENTS:
         plot_hedged_book(inst, var_ts, realized,
                          charts / f"14_hedged_book_{inst.name}.png")
-    for bk in ("unhedged", "irs_recv_5y"):
+    for bk in ("unhedged", "irs_pay_5y"):
         plot_method_focus(var_ts, breaches, bk,
                           charts / f"15_var_method_focus_{bk}.png")
     plot_instrument_comparison(var_ts, realized, "Monte Carlo",
@@ -598,13 +590,13 @@ if __name__ == "__main__":
     print(f"backtest dates : {var_ts.date.min().date()} -> "
           f"{var_ts.date.max().date()}  ({var_ts.date.nunique()} VaR estimates, "
           f"{len(realized)} non-overlapping 10-day windows)")
-    sign_txt = ("rates up -> gain (pipeline MV view; receiver hedges)"
-                if DEBT_SIGN > 0 else "rates up -> loss (payer hedges)")
+    sign_txt = ("rates up -> gain (MV-of-liability view)"
+                if DEBT_SIGN > 0 else "rates up -> loss (floating borrower)")
     print(f"horizon / conf : {HORIZON}d / {vc.CONFIDENCE_LEVEL:.0%}")
-    print(f"book           : EUR {DEBT_NOTIONAL:,.0f} floating, duration "
+    print(f"book           : EUR {DEBT_NOTIONAL:,.0f} floating debt, duration "
           f"{DEBT_DURATION:g}, DEBT_SIGN={DEBT_SIGN:+.0f}  [{sign_txt}]")
-    print(f"hedge          : {HEDGE_NOTIONAL:,.0f} per swap  "
-          f"(receivers = intended hedge, payers = comparison)\n")
+    print(f"hedge          : {HEDGE_NOTIONAL:,.0f} per payer swap  "
+          f"(2 spot IRS + 2 forward-starting)\n")
 
     print("EXCEPTION SUMMARY (expected rate = 5%)")
     with pd.option_context("display.width", 160,
@@ -617,7 +609,7 @@ if __name__ == "__main__":
                            "display.float_format", fmt):
         print(show.to_string())
 
-    print("\nSPOT IRS ('A-IRS') vs FORWARD SWAP  (Monte Carlo VaR / realised P&L)")
+    print("\nSPOT PAYER IRS vs FORWARD PAYER SWAP  (Monte Carlo VaR / realised P&L)")
     mc = var_ts[var_ts.method == "Monte Carlo"]
     cmp_rows = []
     for b in COMPARE_BOOKS:
@@ -630,23 +622,22 @@ if __name__ == "__main__":
         print(pd.DataFrame(cmp_rows).set_index("book").to_string())
 
     print(f"\ncharts -> {charts}/12_hedge_var_backtest.png, 13_hedge_savings.png,")
-    print("          14_hedged_book_*.png (6),")
-    print("          15_var_method_focus_{unhedged,irs_recv_5y}.png,")
+    print("          14_hedged_book_*.png (4),")
+    print("          15_var_method_focus_{unhedged,irs_pay_5y}.png,")
     print("          16_spot_irs_vs_forward_swap.png")
     print(f"tables -> {results}/hedge_backtest_*.csv")
 
     print(
         "\nnotes:\n"
-        "  * Sign follows Final version.py (DEBT_SIGN=+1): the book GAINS when\n"
-        "    rates rise.  RECEIVER swaps offset it (hedged VaR < unhedged);\n"
-        "    PAYER swaps add exposure (shown for comparison).\n"
-        "  * irs_recv_5y (spot 'A-IRS') PV01 ~ the debt DV01 -> near DV01-\n"
-        "    neutral, kills most of the VaR.\n"
-        "  * fwd_recv_2y5y / fwd_recv_5y5y (the forward swap): live from day 1\n"
-        "    but sensitivity is concentrated in the 2-7y / 5-10y bucket and is\n"
-        "    smaller per unit notional, so at 14bn they UNDER-hedge the near\n"
-        "    term -- see chart 16.  Scale notional up or use the spot IRS for a\n"
-        "    tighter hedge.\n"
+        "  * DEBT_SIGN=-1: 14bn floating BORROWER, rates up -> loss. The PAYER\n"
+        "    swap gains when rates rise -> it offsets the debt (hedged VaR <\n"
+        "    unhedged).\n"
+        "  * irs_pay_5y PV01 ~ the debt DV01 -> near DV01-neutral, kills most\n"
+        "    of the VaR.\n"
+        "  * fwd_pay_2y5y / fwd_pay_5y5y (the forward swap): live from day 1\n"
+        "    but sensitivity is a 2-7y / 5-10y calendar spread, so at 14bn they\n"
+        "    UNDER-hedge -- see chart 16. Scale notional up or use the spot IRS\n"
+        "    for a tighter hedge.\n"
         "  * Delta-Normal ~ Monte Carlo: the book is near-linear; the gap is\n"
         "    just swap convexity (a few %).\n"
         "  * Christoffersen independence is rejected because the VaR grid\n"
