@@ -25,15 +25,16 @@ Quick start
     from forward_swap import forward_swap_pv
 
     today = swap_curves.iloc[-1]                 # latest curve, in percent
-    res = forward_swap_pv(today, notional=10_000_000,
-                          start=2, tenor=5, position="payer")
-    res["fair_forward_rate"]   # ~ the 2y5y forward par rate
+    res = forward_swap_pv(today, notional=14_000_000_000,
+                          start=0, tenor=5, position="payer")
+    res["fair_forward_rate"]   # the 5y par swap rate
     res["pv"]                  # ~ 0 when priced at the fair rate
+    K = res["fixed_rate"]      # struck rate - keep this for revaluation
 
-    # revalue the SAME contract after a +100bp parallel shift
-    shocked = today + 1.0                        # +1.00 % on every node
-    pnl = forward_swap_pv(shocked, 10_000_000, 2, 5,
-                          fixed_rate=res["fixed_rate"], position="payer")["pv"]
+This module only prices.  The VaR pipeline owns scenario generation: it builds
+each shocked curve (historical / parametric / Monte-Carlo) and calls
+``forward_swap_pv(scenario_curve, N, start, tenor, fixed_rate=K, ...)`` once per
+scenario to get the P&L distribution.
 
 Conventions & simplifications
 -----------------------------
@@ -87,7 +88,6 @@ __all__ = [
     "bootstrap_discount_curve",
     "price_forward_swap",
     "forward_swap_pv",
-    "shift_par_rates",
 ]
 
 
@@ -265,48 +265,18 @@ def forward_swap_pv(rates, notional: float, start, tenor,
     return res
 
 
-def shift_par_rates(rates, bp: float, *, percent: bool = True):
-    """Return ``rates`` shifted by ``bp`` basis points (parallel), same units."""
-    delta = bp * (1e-2 if percent else 1e-4)
-    if isinstance(rates, (pd.Series, pd.DataFrame)):
-        return rates + delta
-    return {k: v + delta for k, v in dict(rates).items()}
-
-
 # --------------------------------------------------------------------------- #
-if __name__ == "__main__":
+if __name__ == "__main__":                       # sanity check only
     from swap_curves import swap_curves
 
     today = swap_curves.iloc[-1]
+    NOTIONAL = 14_000_000_000
 
-    NOTIONAL = 14_000_000_000            # 14 bn, adjust here
-    START = 0                            # 0 = spot start; raise for a forward
-    # the hedge book: a 5y and a 10y payer swap, struck at today's fair rate
-    DEALS = [
-        {"start": START, "tenor": 5, "notional": NOTIONAL, "position": "payer"},
-        {"start": START, "tenor": 10, "notional": NOTIONAL, "position": "payer"},
-    ]
-
-    print(f"curve date : {swap_curves.index[-1].date()}\n")
-
-    for d in DEALS:                      # strike each deal at its fair rate
-        r = forward_swap_pv(today, d["notional"], d["start"], d["tenor"],
-                            position=d["position"])
-        d["fixed_rate"] = r["fixed_rate"]
-        lbl = f"{d['start']:g}y{d['tenor']:g}y {d['position']}"
-        print(f"{lbl}  notional {d['notional']:,.0f}")
+    print(f"curve date : {swap_curves.index[-1].date()}")
+    for tenor in (5, 10):
+        r = forward_swap_pv(today, NOTIONAL, start=0, tenor=tenor,
+                            position="payer")
+        print(f"0y{tenor}y payer  notional {NOTIONAL:,.0f}")
         print(f"  fair rate       : {r['fair_forward_rate'] * 100:.4f} %")
-        print(f"  annuity         : {r['annuity']:.4f}")
-        print(f"  PV @ fair rate  : {r['pv']:,.2f}   (~ 0)")
-        print(f"  PV01 (per +1bp) : {r['pv01']:,.2f}\n")
-
-    print("parallel-shift revaluation (same struck rates):")
-    print(f"  {'shift':>8} | {'5y payer PV':>18} | {'10y payer PV':>18} | "
-          f"{'portfolio PV':>18}")
-    for bp in (-200, -100, -50, 0, +50, +100, +200):
-        shocked = shift_par_rates(today, bp)
-        pvs = [forward_swap_pv(shocked, d["notional"], d["start"], d["tenor"],
-                               fixed_rate=d["fixed_rate"],
-                               position=d["position"])["pv"] for d in DEALS]
-        print(f"  {bp:+6d}bp | {pvs[0]:>18,.0f} | {pvs[1]:>18,.0f} | "
-              f"{sum(pvs):>18,.0f}")
+        print(f"  PV @ fair rate  : {r['pv']:,.2f}")
+        print(f"  PV01 (per +1bp) : {r['pv01']:,.2f}")
