@@ -12,7 +12,8 @@ reports the spread over the equivalent bullet.
 | `curve_io.py` | finds `Swap curves.xlsx` / `swap_curves.py` / `forward_swap.py` in the repo, loads one curve date, bootstraps a `DiscountCurve` |
 | `engine.py` | `HullWhiteEngine` (fitted trinomial tree, any exercise set) and `BlackEngine` (closed-form European cross-check, single call only) |
 | `pricer.py` | `CallableSpec`, `ParCouponResult`, `par_coupon`, `call_ladder`, `compare_structures` |
-| `main.py` | CLI over a grid of structures, plus `--config spec.yaml` |
+| `scenarios.py` | curve sensitivity / scenario analysis — issuer P&L, call value, effective duration & convexity, key-rate DV01 |
+| `main.py` | CLI over a grid of structures, plus `--config spec.yaml` and `--scenarios` |
 | `spec.example.yaml` | example config: a list of `CallableSpec` dicts |
 | `tests/` | validation suite (`pip install pytest`, then `pytest`) |
 | `ASSUMPTIONS.md` | data / formulas / assumptions / limitations reference |
@@ -83,6 +84,53 @@ For every `(maturity, nc)` pair it prints the single-call ladder (par coupon for
 a one-off call at each candidate year `nc … maturity-1`), the best single call,
 the Bermudan (all those years exercisable), and the spread of each over that
 maturity's bullet.
+
+## Curve sensitivity / scenario analysis (`scenarios.py`)
+
+Answers "how much does the issuer (Vonovia) benefit / lose if rates fall 100 bp,
+rise, flatten, steepen, bulge in the belly …". Every shock is **basis points on
+the par swap rate per tenor**, then the curve is re-bootstrapped.
+
+```bash
+python main.py --scenarios --maturities 7 --nc 2 --notional 500000000
+python main.py --scenarios --struck-coupon 350   # value an existing 3.50% bond
+```
+
+Three tables per structure (Bermudan):
+
+* **Scenario table** — for each shock: repriced par coupon and `Δ` vs base, the
+  spread over bullet, the mark-to-market of the outstanding liability, the
+  embedded **call value**, and
+
+  ```
+  issuer_pnl        = base_liability_value − scenario_liability_value   (>0 = gain)
+  call_contribution = issuer_pnl − bullet_pnl
+                    = how much being callable rather than bullet helped
+  ```
+
+  On a **rally** the call moves in the money, `call_value` jumps and
+  `call_contribution > 0` — the call caps how far the liability can appreciate.
+  On a **sell-off** the call decays and `call_contribution < 0` (the premium
+  paid up front is wasted).
+* **Effective duration / convexity** — parallel ±25 bp finite differences. The
+  callable shows the classic signature: **shorter effective duration** and
+  **negative convexity** vs the bullet.
+* **Key-rate DV01** — money per +1 bp at each curve node (central difference,
+  default 10 bp bump). The bullet profile is smooth and sums to its effective
+  DV01; the callable profile is front-loaded and lumpy around the call dates
+  (real, but the lattice amplifies it — treat as indicative).
+
+```python
+from scenarios import scenario_analysis, effective_risk, key_rate_dv01, parallel, bull_flattener
+df = scenario_analysis(rates, 0.15, CallableSpec(7, 2, "bermudan"),
+                       scenarios=[parallel(-100), parallel(+100), bull_flattener(100)],
+                       notional=500_000_000)
+```
+
+Default scenario set: unchanged, parallel ±50/±100/±200, bull-flattener 100,
+bear-steepener 100, 2s10s steepener/flattener 50, mid-curve bulge ±50. Build
+your own with `parallel`, `twist`, `steepener`, `flattener`, `bull_flattener`,
+`bear_steepener`, `belly`, `custom`.
 
 ## Library use
 

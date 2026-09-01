@@ -135,6 +135,55 @@ Requires `s_fwd > 0` and `c > 0` (lognormal); raises otherwise.
 
 ---
 
+## 3b. Scenario analysis (`scenarios.py`)
+
+**What it computes.** For a set of named curve shocks it re-bootstraps the curve
+and reprices: the par coupon, the spread over bullet, and — holding the issued
+coupon `c*` fixed — the mark-to-market of the callable liability and of the
+equivalent bullet. Issuer P&L is `base_value − scenario_value` (the bond is a
+liability, so a fall in value is a gain). `call_contribution = issuer_pnl −
+bullet_pnl`. Also effective duration/convexity (parallel ±25 bp) and key-rate
+DV01 (per-node central difference).
+
+**Formulas.**
+```
+call_value(c)        = straight_price(c) − callable_price(c)          ≥ 0
+issuer_pnl           = (V_callable(base) − V_callable(scen)) · N/100
+eff_duration         = −(P(+Δy) − P(−Δy)) / (2·Δy·P₀)
+eff_convexity        = (P(+Δy) + P(−Δy) − 2P₀) / (P₀·Δy²)
+key_rate_dv01(node)  = −(P(node +Δ) − P(node −Δ)) / (2·Δ_bp) · N/100
+```
+
+**Extra assumptions.**
+* Shocks are applied to the **par swap rate at each quoted tenor** (bp), linear
+  between tenors, then the curve is re-bootstrapped from scratch. Named builders
+  (`steepener`, `bull_flattener`, `belly`, …) are fixed linear/tent shapes — a
+  `steepener(bp)` is exactly `−bp/2` at 1y to `+bp/2` at 10y, etc.
+* The struck coupon `c*` defaults to the **base-curve par coupon** (bond assumed
+  issued at par today); base callable MTM is then ≈ 100.
+* The exercise set carried into the MTM is the spec's Bermudan schedule, or for
+  a `single` spec the **base-curve** best call year (it is not re-optimised per
+  scenario).
+* `σ` (and, under `vol_type="black"`, `r_ref`) are **recomputed on each shocked
+  curve** — vol is not held fixed across scenarios.
+* Money columns scale linearly with `--notional`; `notional = 100` ⇒ points.
+
+**Extra limitations.**
+* Effective duration/convexity are **parallel** measures; they do not capture
+  curve-reshaping risk (that is what the key-rate table and the twist scenarios
+  are for).
+* Key-rate DV01 for the **callable** is lumpy near the call dates: a 1 bp
+  single-node bump barely perturbs the lattice and the exercise boundary snaps
+  between nodes, so the default bump is 10 bp and the bucket total can differ
+  from the effective DV01 by a few percent. The **bullet** key-rate profile is
+  smooth and additive. Treat callable key-rate numbers as indicative.
+* Scenarios are **deterministic** "what-ifs", not probability-weighted. For a
+  distributional view use the historical / Monte-Carlo curve draws in
+  `var_core.py`.
+* No second-order cross-gamma between vol and rates; vol re-derives from the
+  shocked curve but there is no explicit vol shock (add one by passing a
+  different `vols`).
+
 ## 4. Limitations
 
 * **Not calibrated.** Outputs move with the hand-set `a`, `vol`, `vol_type`;

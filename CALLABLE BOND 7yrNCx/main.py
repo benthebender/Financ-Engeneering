@@ -35,6 +35,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from curve_io import build_discount_curve, load_par_rates, max_curve_tenor
 from pricer import CallableSpec, compare_structures, par_coupon
+from scenarios import (
+    DEFAULT_SCENARIOS,
+    effective_risk,
+    key_rate_dv01,
+    scenario_analysis,
+)
 
 pd.set_option("display.float_format", lambda v: f"{v:,.4f}")
 pd.set_option("display.max_rows", 200)
@@ -73,6 +79,16 @@ def _parser() -> argparse.ArgumentParser:
                    help="path to 'Swap curves.xlsx' (default: auto-find)")
     p.add_argument("--out", type=str, default=None,
                    help="directory to also write CSVs into")
+    p.add_argument("--scenarios", action="store_true",
+                   help="run the curve sensitivity / scenario analysis (issuer "
+                        "P&L, call value, effective duration/convexity, key-rate "
+                        "DV01) for the Bermudan of each (maturity, nc) pair")
+    p.add_argument("--struck-coupon", type=float, default=None,
+                   help="issued coupon in bp for the scenario MTM (default: the "
+                        "base-curve par coupon, i.e. struck at par today)")
+    p.add_argument("--notional", type=float, default=100.0,
+                   help="face amount for scenario money columns (default 100 = "
+                        "report in points)")
     return p
 
 
@@ -169,6 +185,55 @@ def run_grid(args, curve, out_dir) -> None:
               f"{out_dir / 'grid_summary.csv'}")
 
 
+def run_scenarios(args, rates, out_dir) -> None:
+    max_tenor = max_curve_tenor(build_discount_curve(rates))
+    struck = None if args.struck_coupon is None else args.struck_coupon / 1e4
+
+    for m in args.maturities:
+        if m > max_tenor:
+            print(f"!! skipping maturity {m}y: exceeds curve ({max_tenor}y)\n")
+            continue
+        for nc in args.nc:
+            if not (1 <= nc < m):
+                print(f"!! skipping {m}y NC{nc}: need 1 <= nc < maturity\n")
+                continue
+
+            spec = CallableSpec(m, nc, "bermudan", call_price=args.call_price)
+            kw = _engine_kw(args)
+            sc = scenario_analysis(rates, args.vol, spec, args.engine,
+                                   scenarios=DEFAULT_SCENARIOS,
+                                   notional=args.notional, struck_coupon=struck,
+                                   **kw)
+            er = effective_risk(rates, args.vol, spec, struck_coupon=struck,
+                                engine=args.engine, notional=args.notional, **kw)
+            kr = key_rate_dv01(rates, args.vol, spec, struck_coupon=struck,
+                               engine=args.engine, notional=args.notional, **kw)
+
+            print("=" * 78)
+            print(f"  {m}y NC{nc} Bermudan   "
+                  f"struck coupon {sc.attrs['struck_coupon_bp']:.1f} bp   "
+                  f"notional {args.notional:,.0f}")
+            print("=" * 78)
+            fmt = lambda v: (f"{v:,.0f}" if abs(v) >= 1000 else f"{v:,.2f}")
+            print("Scenario table  (mtm & call_value in points; pnl columns in "
+                  "money; issuer_pnl>0 = liability cheaper = gain)")
+            print(sc.to_string(float_format=fmt))
+            print("\nEffective duration / convexity (parallel +/-25bp):")
+            print(er.to_string(float_format=fmt))
+            print("\nKey-rate DV01  (money per +1bp at each node; +ve = issuer "
+                  "gains as that node rises):")
+            print(kr.to_string(float_format=fmt))
+            print()
+
+            if out_dir:
+                tag = f"{m}y_nc{nc}"
+                sc.to_csv(out_dir / f"scenarios_{tag}.csv")
+                er.to_csv(out_dir / f"effrisk_{tag}.csv")
+                kr.to_csv(out_dir / f"keyrate_{tag}.csv")
+                print(f"wrote scenarios_{tag}.csv, effrisk_{tag}.csv, "
+                      f"keyrate_{tag}.csv\n")
+
+
 def main(argv=None) -> None:
     args = _parser().parse_args(argv)
 
@@ -188,7 +253,9 @@ def main(argv=None) -> None:
     if out_dir:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.config:
+    if args.scenarios:
+        run_scenarios(args, rates, out_dir)
+    elif args.config:
         run_config(args, curve, out_dir)
     else:
         run_grid(args, curve, out_dir)

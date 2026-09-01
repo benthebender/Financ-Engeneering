@@ -274,6 +274,18 @@ class HullWhiteEngine:
     def bullet_par_coupon(self) -> float:
         return bullet_par_coupon(self.curve, self.maturity, self.freq)
 
+    def straight_price(self, coupon: float) -> float:
+        """Value per ``FACE`` of the *non-callable* bond with this coupon."""
+        sched = coupon_schedule(self.maturity, self.freq)
+        ann = sum(tau * self.curve.df(t) for t, tau in sched)
+        return coupon * FACE * ann + FACE * self.curve.df(float(self.maturity))
+
+    def call_value(self, coupon: float, exercise_years=None,
+                   call_price: float = 100.0) -> float:
+        """Value of the issuer's embedded call = straight - callable (>= 0)."""
+        return self.straight_price(coupon) - self.price(coupon, exercise_years,
+                                                        call_price)
+
     @property
     def info(self) -> dict:
         return {
