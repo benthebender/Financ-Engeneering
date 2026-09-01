@@ -168,6 +168,12 @@ key_rate_dv01(node)  = −(P(node +Δ) − P(node −Δ)) / (2·Δ_bp) · N/100
   curve** — vol is not held fixed across scenarios.
 * Money columns scale linearly with `--notional`; `notional = 100` ⇒ points.
 
+**Charts (`plots.py`).** The parallel-sweep figures step the curve from −200 to
++200 bp in 10 bp steps (re-bootstrapping each time); the bar chart uses the
+default named scenarios. The struck coupon shown is the base-curve par coupon
+unless `--struck-coupon` is given, so base P&L is zero by construction. Colours
+are the Okabe-Ito colour-blind-safe set; money columns follow `--notional`.
+
 **Extra limitations.**
 * Effective duration/convexity are **parallel** measures; they do not capture
   curve-reshaping risk (that is what the key-rate table and the twist scenarios

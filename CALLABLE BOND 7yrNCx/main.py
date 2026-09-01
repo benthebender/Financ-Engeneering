@@ -83,6 +83,9 @@ def _parser() -> argparse.ArgumentParser:
                    help="run the curve sensitivity / scenario analysis (issuer "
                         "P&L, call value, effective duration/convexity, key-rate "
                         "DV01) for the Bermudan of each (maturity, nc) pair")
+    p.add_argument("--plots", action="store_true",
+                   help="render presentation PNG charts of the sensitivity "
+                        "analysis into --out (default ./charts)")
     p.add_argument("--struck-coupon", type=float, default=None,
                    help="issued coupon in bp for the scenario MTM (default: the "
                         "base-curve par coupon, i.e. struck at par today)")
@@ -234,6 +237,30 @@ def run_scenarios(args, rates, out_dir) -> None:
                       f"keyrate_{tag}.csv\n")
 
 
+def run_plots(args, rates, out_dir) -> None:
+    from plots import save_all
+
+    out_dir = out_dir or Path("charts")
+    struck = None if args.struck_coupon is None else args.struck_coupon / 1e4
+    max_tenor = max_curve_tenor(build_discount_curve(rates))
+
+    for m in args.maturities:
+        if m > max_tenor:
+            print(f"!! skipping maturity {m}y: exceeds curve ({max_tenor}y)\n")
+            continue
+        for nc in args.nc:
+            if not (1 <= nc < m):
+                print(f"!! skipping {m}y NC{nc}: need 1 <= nc < maturity\n")
+                continue
+            spec = CallableSpec(m, nc, "bermudan", call_price=args.call_price)
+            written = save_all(rates, args.vol, spec, out_dir,
+                               engine=args.engine, notional=args.notional,
+                               struck_coupon=struck, **_engine_kw(args))
+            print(f"{m}y NC{nc}: wrote {len(written)} files to {out_dir}/")
+            for p in written:
+                print(f"  {p.name}")
+
+
 def main(argv=None) -> None:
     args = _parser().parse_args(argv)
 
@@ -253,7 +280,9 @@ def main(argv=None) -> None:
     if out_dir:
         out_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.scenarios:
+    if args.plots:
+        run_plots(args, rates, out_dir)
+    elif args.scenarios:
         run_scenarios(args, rates, out_dir)
     elif args.config:
         run_config(args, curve, out_dir)

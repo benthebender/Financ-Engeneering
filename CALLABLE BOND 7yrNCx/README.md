@@ -13,7 +13,8 @@ reports the spread over the equivalent bullet.
 | `engine.py` | `HullWhiteEngine` (fitted trinomial tree, any exercise set) and `BlackEngine` (closed-form European cross-check, single call only) |
 | `pricer.py` | `CallableSpec`, `ParCouponResult`, `par_coupon`, `call_ladder`, `compare_structures` |
 | `scenarios.py` | curve sensitivity / scenario analysis — issuer P&L, call value, effective duration & convexity, key-rate DV01 |
-| `main.py` | CLI over a grid of structures, plus `--config spec.yaml` and `--scenarios` |
+| `plots.py` | presentation PNG charts of the sensitivity analysis (matplotlib) |
+| `main.py` | CLI over a grid of structures, plus `--config spec.yaml`, `--scenarios`, `--plots` |
 | `spec.example.yaml` | example config: a list of `CallableSpec` dicts |
 | `tests/` | validation suite (`pip install pytest`, then `pytest`) |
 | `ASSUMPTIONS.md` | data / formulas / assumptions / limitations reference |
@@ -131,6 +132,34 @@ Default scenario set: unchanged, parallel ±50/±100/±200, bull-flattener 100,
 bear-steepener 100, 2s10s steepener/flattener 50, mid-curve bulge ±50. Build
 your own with `parallel`, `twist`, `steepener`, `flattener`, `bull_flattener`,
 `bear_steepener`, `belly`, `custom`.
+
+## Charts for a presentation (`plots.py`)
+
+```bash
+python main.py --plots --notional 500000000 --out charts
+python main.py --plots --struck-coupon 350 --maturities 7 10 --nc 2 1
+```
+
+Writes five PNGs (150 dpi, slide-sized, colour-blind-safe) plus the two CSVs
+behind them:
+
+| file | shows |
+|------|-------|
+| `pnl_vs_shift__*.png` | issuer P&L on the liability, callable vs bullet, across a −200…+200 bp parallel move — the asymmetry / negative convexity |
+| `call_value__*.png` | value of the embedded call vs the parallel move |
+| `scenario_bars__*.png` | "callable − bullet" benefit per named scenario (the impact of different hikes / falls) |
+| `par_coupon__*.png` | funding cost (par coupon) vs the parallel move, bullet as reference |
+| `dashboard__*.png` | all four on one 2×2 slide |
+
+```python
+from plots import compute_sensitivity, pnl_vs_shift, scenario_bars, save_all
+d = compute_sensitivity(rates, 0.15, CallableSpec(7, 2, "bermudan"), notional=5e8)
+fig = pnl_vs_shift(d); fig.savefig("headline.png", bbox_inches="tight")
+```
+
+The struck coupon defaults to the base-curve par coupon (bond assumed issued at
+par today), so base P&L is zero and every bar is a clean "vs today" delta.
+`charts/` is git-ignored.
 
 ## Library use
 
