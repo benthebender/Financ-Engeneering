@@ -1,0 +1,48 @@
+curve source : C:\Users\benlu\Financ-Engeneering\Financ-Engeneering\Data\Swap curves.xlsx
+curve date   : 2026-08-31  (10 tenors 1Y..10Y, max 10y)
+rates (%)    : 1Y=3.013, 2Y=3.140, 3Y=3.167, 4Y=3.182, 5Y=3.201, 6Y=3.224, 7Y=3.252, 8Y=3.282, 9Y=3.314, 10Y=3.346
+model        : hw engine, vol=0.15 (black), a=0.03, 12 steps/yr
+
+==============================================================================
+  7y NC2 Bermudan   struck coupon 357.2 bp   notional 500,000,000
+==============================================================================
+Scenario table  (mtm & call_value in points; pnl columns in money; issuer_pnl>0 = liability cheaper = gain)
+                          shift_1y/10y_bp  par_coupon_bp  d_par_bp  spread_bp  d_spread_bp  callable_mtm  call_value_pts  d_call_value_pts  issuer_pnl  bullet_pnl  call_contribution
+scenario                                                                                                                                                                             
+base                                  0/0         357.19      0.00      32.00         0.00        100.00            1.98              0.00        0.00        0.00               0.00
+unchanged                           +0/+0         357.19      0.00      32.00         0.00        100.00            1.98              0.00        0.00        0.00               0.00
+parallel -200bp                 -200/-200         135.39   -221.81      10.20       -21.81        104.78           10.70              8.72 -23,920,177 -67,540,716         43,620,539
+parallel -100bp                 -100/-100         246.35   -110.85      21.16       -10.85        102.77            5.71              3.73 -13,856,666 -32,492,462         18,635,796
+parallel -50bp                    -50/-50         301.79    -55.40      26.60        -5.40        101.64            3.53              1.55  -8,204,071 -15,940,422          7,736,352
+parallel +50bp                    +50/+50         412.55     55.35      37.36         5.35         97.80            1.11             -0.87  10,994,049  15,354,531         -4,360,483
+parallel +100bp                 +100/+100         467.86    110.66      42.67        10.66         95.29            0.66             -1.32  23,538,817  30,147,693         -6,608,875
+parallel +200bp                 +200/+200         578.30    221.10      53.11        21.10         90.07            0.28             -1.70  49,653,462  58,142,335         -8,488,872
+bull flattener 100bp             -50/-150         259.83    -97.36      51.31        19.30        102.01            7.52              5.54 -10,042,120 -37,749,897         27,707,777
+bear steepener 100bp             +50/+150         467.51    110.31      25.65        -6.35         94.65            0.30             -1.68  26,738,918  35,157,841         -8,418,923
+steepener +50bp (2s10s)           -25/+25         356.58     -0.61      23.06        -8.95        100.02            1.44             -0.54    -120,487   2,569,292         -2,689,779
+flattener +50bp (2s10s)           +25/-25         361.05      3.86      44.19        12.19         99.88            2.61              0.63     590,849  -2,564,513          3,155,362
+mid-curve bulge +50bp @5y           +0/+0         383.24     26.04      41.38         9.38         98.95            1.99              0.01   5,256,960   5,200,003             56,957
+mid-curve bulge -50bp @5y           -0/-0         342.04    -15.16      33.51         1.51        100.46            2.58              0.60  -2,290,199  -5,305,652          3,015,452
+
+Effective duration / convexity (parallel +/-25bp):
+          price  eff_duration  eff_convexity  dv01_money
+callable 100.00          3.90        -225.78     195,083
+bullet   101.98          6.14          45.96     312,887
+
+Key-rate DV01  (money per +1bp at each node; +ve = issuer gains as that node rises):
+       callable_dv01  bullet_dv01
+tenor                            
+1Y            188.33       124.87
+2Y            43,081       253.19
+3Y            19,188       385.59
+4Y            14,323       522.19
+5Y            14,289       663.06
+6Y            16,979       808.36
+7Y           101,664      310,109
+8Y             -0.00        -0.00
+9Y             -0.00        -0.00
+10Y            -0.00        -0.00
+TOTAL        209,712      312,866
+
+wrote scenarios_7y_nc2.csv, effrisk_7y_nc2.csv, keyrate_7y_nc2.csv
+

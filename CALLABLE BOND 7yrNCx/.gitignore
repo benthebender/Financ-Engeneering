@@ -3,3 +3,5 @@ __pycache__/
 .pytest_cache/
 _run/
 results/
+charts/
+_charts_test/
