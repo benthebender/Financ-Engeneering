@@ -89,6 +89,28 @@ def test_callable_helps_issuer_when_rates_fall(upward_rates_pct):
         row["issuer_pnl"] - row["bullet_pnl"], rel=1e-9)
 
 
+def test_scenario_analysis_single_call_type(upward_rates_pct):
+    # a 'single' spec is priced with its base-curve best call year held fixed
+    # across scenarios; the table must still be well-formed and directionally
+    # the same as the Bermudan (callable helps on a rally)
+    df = scenario_analysis(upward_rates_pct, VOL, CallableSpec(7, 3, "single"),
+                           scenarios=[parallel(-150), parallel(0), parallel(150)],
+                           notional=5e8, **KW)
+    assert df.loc["base", "callable_mtm"] == pytest.approx(100.0, abs=1e-6)
+    assert df.loc["parallel -150bp", "call_contribution"] > 0
+    assert df.loc["parallel +150bp", "call_contribution"] < 0
+
+
+def test_single_call_nc_sweep_spread_shrinks(upward_curve, upward_rates_pct):
+    from pricer import compare_structures
+    specs = [CallableSpec(7, nc, "single") for nc in (2, 3, 4, 5, 6)]
+    df = compare_structures(upward_curve, VOL, specs, "hw", **KW)
+    # bullet identical for every NC; spread over bullet shrinks as NC lengthens
+    assert df["bullet_bp"].nunique() == 1
+    assert list(df["spread_bp"]) == sorted(df["spread_bp"], reverse=True)
+    assert (df["spread_bp"] > 0).all()
+
+
 def test_money_columns_scale_with_notional(upward_rates_pct):
     spec = CallableSpec(7, 2, "bermudan")
     a = scenario_analysis(upward_rates_pct, VOL, spec, scenarios=[parallel(-100)],

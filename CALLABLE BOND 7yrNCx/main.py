@@ -71,6 +71,14 @@ def _parser() -> argparse.ArgumentParser:
                    help="Hull-White tree steps per year")
     p.add_argument("--call-price", type=float, default=100.0,
                    help="redemption price on a call (per 100 face)")
+    p.add_argument("--call-type", choices=["single", "bermudan"], default="bermudan",
+                   help="structure used by --scenarios / --plots / --nc-table "
+                        "('single' = one call date, the best of the ladder; "
+                        "'bermudan' = callable every year nc..maturity-1)")
+    p.add_argument("--nc-table", action="store_true",
+                   help="print/save a table of par coupon and spread over the "
+                        "bullet for each non-call period (--nc list, or 2..M-1) "
+                        "at one maturity, for the --call-type structure")
     p.add_argument("--config", type=str, default=None,
                    help="YAML file: a list of CallableSpec dicts")
     p.add_argument("--curve-date", type=str, default=None,
@@ -201,7 +209,7 @@ def run_scenarios(args, rates, out_dir) -> None:
                 print(f"!! skipping {m}y NC{nc}: need 1 <= nc < maturity\n")
                 continue
 
-            spec = CallableSpec(m, nc, "bermudan", call_price=args.call_price)
+            spec = CallableSpec(m, nc, args.call_type, call_price=args.call_price)
             kw = _engine_kw(args)
             sc = scenario_analysis(rates, args.vol, spec, args.engine,
                                    scenarios=DEFAULT_SCENARIOS,
@@ -213,7 +221,7 @@ def run_scenarios(args, rates, out_dir) -> None:
                                engine=args.engine, notional=args.notional, **kw)
 
             print("=" * 78)
-            print(f"  {m}y NC{nc} Bermudan   "
+            print(f"  {m}y NC{nc} {args.call_type}   "
                   f"struck coupon {sc.attrs['struck_coupon_bp']:.1f} bp   "
                   f"notional {args.notional:,.0f}")
             print("=" * 78)
@@ -229,7 +237,7 @@ def run_scenarios(args, rates, out_dir) -> None:
             print()
 
             if out_dir:
-                tag = f"{m}y_nc{nc}"
+                tag = f"{m}y_nc{nc}_{args.call_type}"
                 sc.to_csv(out_dir / f"scenarios_{tag}.csv")
                 er.to_csv(out_dir / f"effrisk_{tag}.csv")
                 kr.to_csv(out_dir / f"keyrate_{tag}.csv")
@@ -252,13 +260,54 @@ def run_plots(args, rates, out_dir) -> None:
             if not (1 <= nc < m):
                 print(f"!! skipping {m}y NC{nc}: need 1 <= nc < maturity\n")
                 continue
-            spec = CallableSpec(m, nc, "bermudan", call_price=args.call_price)
+            spec = CallableSpec(m, nc, args.call_type, call_price=args.call_price)
             written = save_all(rates, args.vol, spec, out_dir,
                                engine=args.engine, notional=args.notional,
                                struck_coupon=struck, **_engine_kw(args))
-            print(f"{m}y NC{nc}: wrote {len(written)} files to {out_dir}/")
+            print(f"{m}y NC{nc} {args.call_type}: wrote {len(written)} files "
+                  f"to {out_dir}/")
             for p in written:
                 print(f"  {p.name}")
+
+
+def run_nc_table(args, curve, out_dir) -> None:
+    """Par coupon & spread over bullet by non-call period, at each maturity."""
+    max_tenor = max_curve_tenor(curve)
+    ct = args.call_type
+
+    for m in args.maturities:
+        if m > max_tenor:
+            print(f"!! skipping maturity {m}y: exceeds curve ({max_tenor}y)\n")
+            continue
+        ncs = args.nc if len(args.nc) > 1 else list(range(2, m))
+        ncs = [nc for nc in ncs if 1 <= nc < m]
+        if not ncs:
+            print(f"!! {m}y: no valid non-call periods in {args.nc}\n")
+            continue
+
+        specs = [CallableSpec(m, nc, ct, call_price=args.call_price) for nc in ncs]
+        df = compare_structures(curve, args.vol, specs, args.engine,
+                                **_engine_kw(args))
+        df = df.rename(columns={"nc_period": "nc", "par_coupon_bp": "coupon_bp",
+                                "spread_bp": "spread_vs_bullet_bp"})
+        first = df["coupon_bp"].iloc[0]
+        df["d_coupon_vs_NC%d_bp" % ncs[0]] = df["coupon_bp"] - first
+        cols = ["nc", "n_call_dates", "best_call_year", "coupon_bp",
+                f"d_coupon_vs_NC{ncs[0]}_bp", "bullet_bp", "spread_vs_bullet_bp",
+                "price_check"]
+        df = df[cols]
+
+        print("=" * 78)
+        print(f"  {m}y {ct}-callable - par coupon & spread over bullet by "
+              f"non-call period")
+        print("=" * 78)
+        print(df.to_string(index=False,
+                           float_format=lambda v: f"{v:,.2f}"))
+        print()
+        if out_dir:
+            p = out_dir / f"nc_table_{m}y_{ct}.csv"
+            df.to_csv(p, index=False)
+            print(f"wrote {p}\n")
 
 
 def main(argv=None) -> None:
@@ -284,6 +333,8 @@ def main(argv=None) -> None:
         run_plots(args, rates, out_dir)
     elif args.scenarios:
         run_scenarios(args, rates, out_dir)
+    elif args.nc_table:
+        run_nc_table(args, curve, out_dir)
     elif args.config:
         run_config(args, curve, out_dir)
     else:

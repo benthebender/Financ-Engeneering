@@ -95,6 +95,15 @@ the par swap rate per tenor**, then the curve is re-bootstrapped.
 ```bash
 python main.py --scenarios --maturities 7 --nc 2 --notional 500000000
 python main.py --scenarios --struck-coupon 350   # value an existing 3.50% bond
+python main.py --scenarios --nc 3 --call-type single   # single-call instead of Bermudan
+```
+
+`--call-type single|bermudan` (default `bermudan`) selects the structure for
+`--scenarios`, `--plots` and `--nc-table`. `--nc-table` prints/saves par coupon
+and spread over the bullet for each non-call period at one maturity:
+
+```bash
+python main.py --nc-table --maturities 7 --nc 2 3 4 5 6 --call-type single --out results
 ```
 
 Three tables per structure (Bermudan):
