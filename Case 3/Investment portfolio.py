@@ -10,7 +10,13 @@ warnings.filterwarnings("ignore")
 # ============================================================
 # ALL-KANNS LIFE INSURANCE
 # RETURN-SEEKING PORTFOLIO OPTIMIZATION
-# ROBUST VERSION
+#
+# CORRECTED VERSION:
+# - fixes corrupted Bloomberg bond dates
+# - uses weekly returns
+# - uses last 10 years
+# - performs sanity checks
+# - calculates multiple optimized portfolios
 # ============================================================
 
 
@@ -20,90 +26,294 @@ warnings.filterwarnings("ignore")
 
 FILE_NAME = "Investment Portfolio.xlsx"
 
-# Data cannot extend beyond this date
 AS_OF_DATE = pd.Timestamp("2026-09-02")
 
 LOOKBACK_YEARS = 10
 
-# Use weekly observations to reduce problems caused by
-# different trading calendars / holidays across markets.
-RETURN_FREQUENCY = "W-FRI"
+RISK_FREE_RATE = 0.02
+
+MAX_WEIGHT = 0.20
 
 WEEKS_PER_YEAR = 52
 
-# Risk-free rate for Sharpe ratio
-RISK_FREE_RATE = 0.02
-
-# General maximum position
-MAX_WEIGHT = 0.20
-
-# Number of Monte Carlo portfolios
 N_SIMULATIONS = 30000
 
 
 # ============================================================
-# 2. READ WORKBOOK
+# 2. PROBLEMATIC BLOOMBERG SHEETS
+# ============================================================
+#
+# These sheets contain dates that Excel has already
+# misinterpreted.
+#
+# We therefore reconstruct their dates using:
+#
+# 1. row order
+# 2. weekday column
+# 3. latest known date = 2 September 2026
+#
 # ============================================================
 
-excel_file = pd.ExcelFile(FILE_NAME)
+RECONSTRUCT_DATE_SHEETS = [
 
-sheet_names = excel_file.sheet_names
+    "US Corporate High Yield index",
+
+    "Bloomberg Pan-European High Yie",
+
+    "Bloomberg Euro Treasury Bond In"
+
+]
 
 
-print("\n" + "=" * 90)
+# ============================================================
+# 3. WEEKDAY MAPPING
+# ============================================================
+
+WEEKDAY_MAP = {
+
+    "Mo": 0,
+    "Tu": 1,
+    "We": 2,
+    "Th": 3,
+    "Fr": 4
+
+}
+
+
+# ============================================================
+# 4. READ WORKBOOK
+# ============================================================
+
+excel_file = pd.ExcelFile(
+    FILE_NAME
+)
+
+sheet_names = (
+    excel_file.sheet_names
+)
+
+
+print("\n" + "=" * 100)
 print("WORKBOOK")
-print("=" * 90)
+print("=" * 100)
 
-print("\nSheets found:")
+print("\nSheets:")
 
 for sheet in sheet_names:
-    print(" -", sheet.strip())
+
+    print(
+        " -",
+        sheet.strip()
+    )
+
 
 print(
-    f"\nTotal sheets: {len(sheet_names)}"
+    f"\nTotal assets: "
+    f"{len(sheet_names)}"
 )
 
 
 # ============================================================
-# 3. CLEAN EACH SHEET
-# ============================================================
-#
-# Workbook structure:
-#
-# Column 0 = weekday
-# Column 1 = date
-# Column 2 = price / index level
-#
-# No header.
-#
-# IMPORTANT:
-# Dates are interpreted DAY FIRST.
+# 5. HELPER:
+# FIND PREVIOUS DATE WITH REQUIRED WEEKDAY
 # ============================================================
 
-def clean_sheet(file_name, sheet_name):
+def previous_matching_weekday(
+    current_date,
+    target_weekday
+):
 
-    asset_name = sheet_name.strip()
-
-    df = pd.read_excel(
-        file_name,
-        sheet_name=sheet_name,
-        header=None
+    candidate = (
+        current_date
+        -
+        pd.Timedelta(days=1)
     )
 
-    df = df.dropna(how="all")
+    # Search backwards until weekday matches
+    while (
+        candidate.weekday()
+        !=
+        target_weekday
+    ):
 
-    if df.shape[1] < 3:
+        candidate -= pd.Timedelta(
+            days=1
+        )
 
-        raise ValueError(
-            f"{asset_name}: fewer than 3 columns."
+    return candidate
+
+
+# ============================================================
+# 6. RECONSTRUCT BLOOMBERG DATES
+# ============================================================
+#
+# IMPORTANT:
+#
+# Bloomberg data are stored newest -> oldest.
+#
+# Example:
+#
+# We
+# Tu
+# Mo
+# Fr
+# Th
+#
+# If first valid observation = Wednesday 2 Sep 2026,
+#
+# then:
+#
+# Tuesday = 1 Sep
+# Monday  = 31 Aug
+# Friday  = 28 Aug
+#
+# etc.
+#
+# We do NOT trust the Excel date column for these sheets.
+# ============================================================
+
+def reconstruct_dates(
+    df,
+    sheet_name
+):
+
+    print(
+        f"\nReconstructing dates for: "
+        f"{sheet_name}"
+    )
+
+
+    reconstructed_dates = []
+
+
+    current_date = (
+        AS_OF_DATE
+    )
+
+
+    for i, row in df.iterrows():
+
+        weekday_text = str(
+            row.iloc[0]
+        ).strip()
+
+
+        # ----------------------------------------------------
+        # Get expected weekday
+        # ----------------------------------------------------
+
+        if (
+            weekday_text
+            not in
+            WEEKDAY_MAP
+        ):
+
+            reconstructed_dates.append(
+                pd.NaT
+            )
+
+            continue
+
+
+        target_weekday = (
+            WEEKDAY_MAP[
+                weekday_text
+            ]
         )
 
 
-    # --------------------------------------------------------
-    # Keep Date + Price
-    # --------------------------------------------------------
+        # ----------------------------------------------------
+        # First row
+        # ----------------------------------------------------
 
-    df = df.iloc[:, [1, 2]].copy()
+        if len(
+            reconstructed_dates
+        ) == 0:
+
+            # Find latest date <= AS_OF_DATE
+            # matching stated weekday
+
+            candidate = (
+                AS_OF_DATE
+            )
+
+            while (
+                candidate.weekday()
+                !=
+                target_weekday
+            ):
+
+                candidate -= (
+                    pd.Timedelta(
+                        days=1
+                    )
+                )
+
+            current_date = (
+                candidate
+            )
+
+
+        # ----------------------------------------------------
+        # Subsequent rows
+        # ----------------------------------------------------
+
+        else:
+
+            current_date = (
+                previous_matching_weekday(
+                    current_date,
+                    target_weekday
+                )
+            )
+
+
+        reconstructed_dates.append(
+            current_date
+        )
+
+
+    return pd.Series(
+        reconstructed_dates,
+        index=df.index
+    )
+
+
+# ============================================================
+# 7. CLEAN NORMAL SHEET
+# ============================================================
+
+def clean_normal_sheet(
+    file_name,
+    sheet_name
+):
+
+    asset_name = (
+        sheet_name.strip()
+    )
+
+
+    df = pd.read_excel(
+
+        file_name,
+
+        sheet_name=sheet_name,
+
+        header=None
+
+    )
+
+
+    df = df.dropna(
+        how="all"
+    )
+
+
+    df = df.iloc[
+        :,
+        [1, 2]
+    ].copy()
+
 
     df.columns = [
         "Date",
@@ -111,124 +321,84 @@ def clean_sheet(file_name, sheet_name):
     ]
 
 
-    # ========================================================
-    # DATE CLEANING
-    # ========================================================
-
-    # Some Excel cells may already be true datetime objects.
-    # Others may be strings.
-    #
-    # dayfirst=True fixes European DD/MM/YYYY formatting.
+    # --------------------------------------------------------
+    # DATE
+    # --------------------------------------------------------
 
     df["Date"] = pd.to_datetime(
+
         df["Date"],
+
         errors="coerce",
+
         dayfirst=True
+
     )
 
 
-    # Remove invalid dates
     df = df.dropna(
         subset=["Date"]
     )
 
 
-    # Remove impossible future observations
-    future_rows = (
-        df["Date"] > AS_OF_DATE
-    ).sum()
-
-    if future_rows > 0:
-
-        print(
-            f"WARNING: {asset_name}: "
-            f"removed {future_rows} observations "
-            f"after {AS_OF_DATE.date()}"
-        )
-
     df = df[
-        df["Date"] <= AS_OF_DATE
+
+        df["Date"]
+        <=
+        AS_OF_DATE
+
     ]
 
 
-    # ========================================================
-    # PRICE CLEANING
-    # ========================================================
+    # --------------------------------------------------------
+    # PRICE
+    # --------------------------------------------------------
 
-    raw_price = df["Price"].copy()
+    df["Price"] = pd.to_numeric(
 
+        df["Price"],
 
-    # First attempt:
-    # direct numeric conversion
-
-    numeric_price = pd.to_numeric(
-        raw_price,
         errors="coerce"
+
     )
 
 
-    # If direct conversion fails badly,
-    # try European number formatting.
-
-    if (
-        numeric_price.notna().sum()
-        <
-        0.50 * len(df)
-    ):
-
-        text_price = (
-            raw_price
-            .astype(str)
-            .str.strip()
-            .str.replace(
-                ".",
-                "",
-                regex=False
-            )
-            .str.replace(
-                ",",
-                ".",
-                regex=False
-            )
-        )
-
-        numeric_price = pd.to_numeric(
-            text_price,
-            errors="coerce"
-        )
-
-
-    df["Price"] = numeric_price
-
-
-    # Remove invalid prices
     df = df.dropna(
-        subset=["Price"]
+
+        subset=[
+            "Date",
+            "Price"
+        ]
+
     )
+
 
     df = df[
         df["Price"] > 0
     ]
 
 
-    # Remove duplicate dates
     df = df.drop_duplicates(
+
         subset="Date",
+
         keep="last"
+
     )
 
 
-    # Sort chronologically
     df = df.sort_values(
         "Date"
     )
 
 
-    # Rename price column
     df = df.rename(
+
         columns={
-            "Price": asset_name
+            "Price":
+                asset_name
         }
+
     )
 
 
@@ -237,37 +407,141 @@ def clean_sheet(file_name, sheet_name):
     )
 
 
-    # ========================================================
-    # BASIC SANITY CHECK
-    # ========================================================
-
-    if len(df) < 100:
-
-        print(
-            f"WARNING: {asset_name} has only "
-            f"{len(df)} valid observations."
-        )
-
-
-    print(
-        f"{asset_name:<42}"
-        f"{len(df):>6} obs | "
-        f"{df.index.min().date()} -> "
-        f"{df.index.max().date()} | "
-        f"Last={df.iloc[-1, 0]:,.4f}"
-    )
-
-
     return df
 
 
 # ============================================================
-# 4. CLEAN ALL 14 SERIES
+# 8. CLEAN RECONSTRUCTED BLOOMBERG SHEET
 # ============================================================
 
-print("\n" + "=" * 90)
-print("CLEANING DATA")
-print("=" * 90 + "\n")
+def clean_reconstructed_sheet(
+    file_name,
+    sheet_name
+):
+
+    asset_name = (
+        sheet_name.strip()
+    )
+
+
+    df = pd.read_excel(
+
+        file_name,
+
+        sheet_name=sheet_name,
+
+        header=None
+
+    )
+
+
+    df = df.dropna(
+        how="all"
+    )
+
+
+    if df.shape[1] < 3:
+
+        raise ValueError(
+            f"{asset_name}: "
+            f"not enough columns."
+        )
+
+
+    # --------------------------------------------------------
+    # Reconstruct dates BEFORE selecting columns
+    # --------------------------------------------------------
+
+    df[
+        "Reconstructed_Date"
+    ] = reconstruct_dates(
+        df,
+        asset_name
+    )
+
+
+    # --------------------------------------------------------
+    # Price = original column 2
+    # --------------------------------------------------------
+
+    df[
+        "Price"
+    ] = pd.to_numeric(
+
+        df.iloc[:, 2],
+
+        errors="coerce"
+
+    )
+
+
+    clean = pd.DataFrame({
+
+        "Date":
+            df[
+                "Reconstructed_Date"
+            ],
+
+        asset_name:
+            df[
+                "Price"
+            ]
+
+    })
+
+
+    clean = clean.dropna()
+
+
+    clean = clean[
+
+        clean[
+            asset_name
+        ]
+        >
+        0
+
+    ]
+
+
+    clean = clean[
+
+        clean["Date"]
+        <=
+        AS_OF_DATE
+
+    ]
+
+
+    clean = clean.drop_duplicates(
+
+        subset="Date",
+
+        keep="last"
+
+    )
+
+
+    clean = clean.sort_values(
+        "Date"
+    )
+
+
+    clean = clean.set_index(
+        "Date"
+    )
+
+
+    return clean
+
+
+# ============================================================
+# 9. CLEAN ALL ASSETS
+# ============================================================
+
+print("\n" + "=" * 100)
+print("CLEANING / RECONSTRUCTING DATA")
+print("=" * 100)
 
 
 price_frames = []
@@ -275,149 +549,195 @@ price_frames = []
 
 for sheet_name in sheet_names:
 
+    asset_name = (
+        sheet_name.strip()
+    )
+
+
     try:
 
-        cleaned = clean_sheet(
-            FILE_NAME,
-            sheet_name
+        if (
+            asset_name
+            in
+            RECONSTRUCT_DATE_SHEETS
+        ):
+
+            cleaned = (
+                clean_reconstructed_sheet(
+                    FILE_NAME,
+                    sheet_name
+                )
+            )
+
+        else:
+
+            cleaned = (
+                clean_normal_sheet(
+                    FILE_NAME,
+                    sheet_name
+                )
+            )
+
+
+        price_frames.append(
+            cleaned
         )
 
-        if len(cleaned) > 0:
 
-            price_frames.append(
-                cleaned
-            )
+        print(
+
+            f"{asset_name:<42}"
+
+            f"{len(cleaned):>6} obs | "
+
+            f"{cleaned.index.min().date()} -> "
+
+            f"{cleaned.index.max().date()}"
+
+        )
+
 
     except Exception as error:
 
         print(
-            f"ERROR: {sheet_name}: {error}"
+            f"ERROR: "
+            f"{asset_name}: "
+            f"{error}"
         )
 
 
-if len(price_frames) == 0:
-
-    raise ValueError(
-        "No usable asset data found."
-    )
-
-
 # ============================================================
-# 5. COMBINE PRICE DATA
+# 10. COMBINE PRICE DATA
 # ============================================================
 
 prices = pd.concat(
+
     price_frames,
+
     axis=1
+
 )
+
 
 prices = prices.sort_index()
 
 
-# Final safety filter
 prices = prices[
-    prices.index <= AS_OF_DATE
+
+    prices.index
+    <=
+    AS_OF_DATE
+
 ]
 
 
-print("\n" + "=" * 90)
-print("RAW DATA CHECK")
-print("=" * 90)
+print("\n" + "=" * 100)
+print("COMBINED DATA")
+print("=" * 100)
+
 
 print(
-    f"\nEarliest observation: "
-    f"{prices.index.min().date()}"
-)
-
-print(
-    f"Latest observation:   "
-    f"{prices.index.max().date()}"
-)
-
-print(
-    f"Number of assets:     "
+    f"\nAssets: "
     f"{prices.shape[1]}"
 )
 
 
-if prices.index.max() > AS_OF_DATE:
+print(
+    f"Earliest date: "
+    f"{prices.index.min().date()}"
+)
 
-    raise ValueError(
-        "Future observations remain in dataset."
-    )
+
+print(
+    f"Latest date: "
+    f"{prices.index.max().date()}"
+)
 
 
 # ============================================================
-# 6. DAILY RETURN SANITY CHECK
-# ============================================================
-#
-# We do NOT optimize on these daily returns.
-#
-# We use them only to detect obvious bad observations.
+# 11. DAILY RETURN SANITY CHECK
 # ============================================================
 
-daily_returns_raw = (
-    prices
-    .ffill(limit=5)
-    .pct_change(
-        fill_method=None
+daily_prices = (
+    prices.ffill(
+        limit=5
     )
 )
 
 
-print("\n" + "=" * 90)
-print("DAILY RETURN SANITY CHECK")
-print("=" * 90)
+daily_returns = (
+
+    daily_prices
+
+    .pct_change(
+        fill_method=None
+    )
+
+)
 
 
-sanity_rows = []
+sanity_results = []
 
 
 for asset in prices.columns:
 
     r = (
-        daily_returns_raw[asset]
+        daily_returns[
+            asset
+        ]
         .dropna()
     )
 
+
     if len(r) == 0:
+
         continue
 
 
-    max_up = r.max()
+    annual_vol = (
 
-    max_down = r.min()
+        r.std()
 
-    suspicious_20 = (
-        r.abs() > 0.20
-    ).sum()
+        *
 
-    suspicious_50 = (
-        r.abs() > 0.50
-    ).sum()
+        np.sqrt(252)
+
+    )
 
 
-    sanity_rows.append({
+    sanity_results.append({
 
-        "Asset": asset,
+        "Asset":
+            asset,
 
-        "Maximum Daily Gain":
-            max_up,
+        "Maximum_Daily_Gain":
+            r.max(),
 
-        "Maximum Daily Loss":
-            max_down,
+        "Maximum_Daily_Loss":
+            r.min(),
 
-        "Days > 20% Move":
-            suspicious_20,
+        "Days_Above_10pct":
+            (
+                r.abs()
+                >
+                0.10
+            ).sum(),
 
-        "Days > 50% Move":
-            suspicious_50
+        "Days_Above_20pct":
+            (
+                r.abs()
+                >
+                0.20
+            ).sum(),
+
+        "Daily_Annualized_Vol":
+            annual_vol
 
     })
 
 
 sanity_table = pd.DataFrame(
-    sanity_rows
+    sanity_results
 )
 
 
@@ -426,161 +746,221 @@ sanity_display = (
 )
 
 
-sanity_display[
-    "Maximum Daily Gain"
-] *= 100
+for column in [
 
-sanity_display[
-    "Maximum Daily Loss"
-] *= 100
+    "Maximum_Daily_Gain",
+
+    "Maximum_Daily_Loss",
+
+    "Daily_Annualized_Vol"
+
+]:
+
+    sanity_display[
+        column
+    ] *= 100
+
+
+print("\n" + "=" * 100)
+print("POST-RECONSTRUCTION SANITY CHECK")
+print("=" * 100)
 
 
 print(
+
     sanity_display
+
     .round(2)
+
     .to_string(
         index=False
     )
+
 )
 
 
 # ============================================================
-# 7. REMOVE OBVIOUS EXTREME DATA ERRORS
-# ============================================================
-#
-# Rather than silently treating +/-50% daily moves as real,
-# replace them with missing values.
-#
-# This is deliberately conservative.
+# 12. FLAG REMAINING PROBLEMS
 # ============================================================
 
-daily_returns_clean = (
-    daily_returns_raw
-    .mask(
-        daily_returns_raw.abs() > 0.50
+print("\nSANITY WARNINGS:")
+
+
+problem_found = False
+
+
+for _, row in sanity_table.iterrows():
+
+    asset = (
+        row["Asset"]
     )
-)
+
+
+    if (
+        row[
+            "Days_Above_20pct"
+        ]
+        >
+        0
+    ):
+
+        print(
+
+            f"WARNING: {asset}: "
+
+            f"{int(row['Days_Above_20pct'])} "
+
+            f"daily moves >20% remain."
+
+        )
+
+        problem_found = True
+
+
+    asset_lower = (
+        asset.lower()
+    )
+
+
+    if (
+        "treasury" in asset_lower
+        and
+        row[
+            "Daily_Annualized_Vol"
+        ]
+        >
+        0.15
+    ):
+
+        print(
+
+            f"WARNING: {asset}: "
+
+            f"Treasury volatility still high."
+
+        )
+
+        problem_found = True
 
 
 # ============================================================
-# 8. CONVERT TO WEEKLY PRICES
+# 13. WEEKLY PRICES
 # ============================================================
 #
-# Weekly observations help reduce:
-#
-# - different trading holidays
-# - stale daily prices
-# - asynchronous global markets
-#
-# We take the last available price each Friday/week.
+# Use weekly data for optimization.
 # ============================================================
 
 weekly_prices = (
+
     prices
+
     .resample(
-        RETURN_FREQUENCY
+        "W-FRI"
     )
+
     .last()
+
 )
 
 
-# Forward fill only one week if necessary
 weekly_prices = (
+
     weekly_prices
+
     .ffill(
         limit=1
     )
+
 )
 
 
 # ============================================================
-# 9. COMMON WEEKLY SAMPLE
+# 14. COMMON SAMPLE
 # ============================================================
 
-weekly_prices_common = (
-    weekly_prices
-    .dropna()
+weekly_prices = (
+    weekly_prices.dropna()
 )
 
-
-if len(weekly_prices_common) == 0:
-
-    raise ValueError(
-        "No common weekly price history."
-    )
-
-
-# ============================================================
-# 10. LAST 10 YEARS
-# ============================================================
 
 sample_end = min(
-    weekly_prices_common.index.max(),
+
+    weekly_prices.index.max(),
+
     AS_OF_DATE
+
 )
 
+
 sample_start = (
+
     sample_end
+
     -
+
     pd.DateOffset(
         years=LOOKBACK_YEARS
     )
-)
-
-
-weekly_prices_common = (
-
-    weekly_prices_common[
-
-        (
-            weekly_prices_common.index
-            >= sample_start
-        )
-
-        &
-
-        (
-            weekly_prices_common.index
-            <= AS_OF_DATE
-        )
-
-    ]
 
 )
 
 
-print("\n" + "=" * 90)
-print("FINAL OPTIMIZATION SAMPLE")
-print("=" * 90)
+weekly_prices = weekly_prices[
+
+    (
+        weekly_prices.index
+        >=
+        sample_start
+    )
+
+    &
+
+    (
+        weekly_prices.index
+        <=
+        AS_OF_DATE
+    )
+
+]
+
+
+print("\n" + "=" * 100)
+print("OPTIMIZATION SAMPLE")
+print("=" * 100)
+
 
 print(
-    f"\nFrequency: Weekly"
+    f"\nStart: "
+    f"{weekly_prices.index.min().date()}"
 )
 
-print(
-    f"Start: {weekly_prices_common.index.min().date()}"
-)
 
 print(
-    f"End:   {weekly_prices_common.index.max().date()}"
+    f"End: "
+    f"{weekly_prices.index.max().date()}"
 )
+
 
 print(
     f"Weekly observations: "
-    f"{len(weekly_prices_common)}"
+    f"{len(weekly_prices)}"
 )
 
 
 # ============================================================
-# 11. WEEKLY RETURNS
+# 15. WEEKLY RETURNS
 # ============================================================
 
 returns = (
-    weekly_prices_common
+
+    weekly_prices
+
     .pct_change(
         fill_method=None
     )
+
     .dropna()
+
 )
 
 
@@ -588,13 +968,14 @@ assets = list(
     returns.columns
 )
 
+
 N_ASSETS = len(
     assets
 )
 
 
 # ============================================================
-# 12. ANNUALIZED ARITHMETIC RETURN
+# 16. EXPECTED RETURNS
 # ============================================================
 
 annual_returns = (
@@ -609,19 +990,18 @@ annual_returns = (
 
 
 # ============================================================
-# 13. CAGR
-# ============================================================
-#
-# CAGR is useful as a sanity check against the arithmetic
-# expected return used by Markowitz.
+# 17. CAGR
 # ============================================================
 
-years_in_sample = (
+years = (
 
     (
-        weekly_prices_common.index[-1]
+        weekly_prices.index[-1]
+
         -
-        weekly_prices_common.index[0]
+
+        weekly_prices.index[0]
+
     ).days
 
     /
@@ -632,37 +1012,44 @@ years_in_sample = (
 
 
 cagr = pd.Series(
+
     index=assets,
+
     dtype=float
+
 )
 
 
 for asset in assets:
 
     start_value = (
-        weekly_prices_common[
+        weekly_prices[
             asset
         ].iloc[0]
     )
 
     end_value = (
-        weekly_prices_common[
+        weekly_prices[
             asset
         ].iloc[-1]
     )
 
-    cagr[asset] = (
+
+    cagr[
+        asset
+    ] = (
 
         (
             end_value
             /
             start_value
         )
+
         **
         (
             1
             /
-            years_in_sample
+            years
         )
 
         -
@@ -673,7 +1060,7 @@ for asset in assets:
 
 
 # ============================================================
-# 14. ANNUALIZED VOLATILITY
+# 18. VOLATILITY
 # ============================================================
 
 annual_volatility = (
@@ -690,7 +1077,7 @@ annual_volatility = (
 
 
 # ============================================================
-# 15. COVARIANCE AND CORRELATION
+# 19. COVARIANCE / CORRELATION
 # ============================================================
 
 cov_matrix = (
@@ -710,7 +1097,7 @@ correlation_matrix = (
 
 
 # ============================================================
-# 16. ASSET STATISTICS
+# 20. ASSET STATISTICS
 # ============================================================
 
 asset_statistics = pd.DataFrame({
@@ -732,9 +1119,7 @@ asset_statistics[
 ] = (
 
     (
-        asset_statistics[
-            "Arithmetic_Return"
-        ]
+        annual_returns
 
         -
 
@@ -743,20 +1128,9 @@ asset_statistics[
 
     /
 
-    asset_statistics[
-        "Volatility"
-    ]
+    annual_volatility
 
 )
-
-
-# ============================================================
-# 17. SANITY WARNINGS
-# ============================================================
-
-print("\n" + "=" * 90)
-print("ASSET STATISTICS - SANITY CHECK")
-print("=" * 90)
 
 
 stats_display = (
@@ -765,97 +1139,67 @@ stats_display = (
 
 
 for col in [
+
     "Arithmetic_Return",
+
     "CAGR",
+
     "Volatility"
+
 ]:
 
-    stats_display[col] *= 100
+    stats_display[
+        col
+    ] *= 100
+
+
+print("\n" + "=" * 100)
+print("ASSET STATISTICS")
+print("=" * 100)
 
 
 print(
+
     stats_display
+
     .round(2)
+
     .to_string()
+
 )
 
 
-print("\nWARNINGS:")
-
-
-for asset in assets:
-
-    vol = annual_volatility[asset]
-
-    ret = annual_returns[asset]
-
-    asset_lower = asset.lower()
-
-
-    if vol > 0.40:
-
-        print(
-            f"WARNING: {asset}: "
-            f"volatility = {vol * 100:.1f}%"
-        )
-
-
-    if (
-        "treasury" in asset_lower
-        and vol > 0.15
-    ):
-
-        print(
-            f"WARNING: {asset}: "
-            f"government bond index volatility "
-            f"is unusually high "
-            f"({vol * 100:.1f}%). "
-            f"Inspect source data."
-        )
-
-
-    if (
-        "high yield" in asset_lower
-        and vol > 0.25
-    ):
-
-        print(
-            f"WARNING: {asset}: "
-            f"HY volatility looks unusually high "
-            f"({vol * 100:.1f}%). "
-            f"Inspect source series."
-        )
-
-
-    if abs(ret) > 0.30:
-
-        print(
-            f"WARNING: {asset}: "
-            f"annualized arithmetic return "
-            f"{ret * 100:.1f}% looks extreme."
-        )
-
-
 # ============================================================
-# 18. PORTFOLIO FUNCTIONS
+# 21. PORTFOLIO FUNCTIONS
 # ============================================================
 
-mu = annual_returns.values
+mu = (
+    annual_returns.values
+)
 
-sigma = cov_matrix.values
+sigma = (
+    cov_matrix.values
+)
 
 
-def portfolio_return(weights):
+def portfolio_return(
+    weights
+):
 
     return float(
-        np.dot(
-            weights,
-            mu
-        )
+
+        weights
+
+        @
+
+        mu
+
     )
 
 
-def portfolio_variance(weights):
+def portfolio_variance(
+    weights
+):
 
     return float(
 
@@ -872,29 +1216,40 @@ def portfolio_variance(weights):
     )
 
 
-def portfolio_volatility(weights):
-
-    variance = portfolio_variance(
-        weights
-    )
+def portfolio_volatility(
+    weights
+):
 
     return np.sqrt(
+
         max(
-            variance,
+
+            portfolio_variance(
+                weights
+            ),
+
             0
+
+        )
+
+    )
+
+
+def portfolio_sharpe(
+    weights
+):
+
+    vol = (
+        portfolio_volatility(
+            weights
         )
     )
 
 
-def portfolio_sharpe(weights):
-
-    volatility = portfolio_volatility(
-        weights
-    )
-
-    if volatility <= 0:
+    if vol == 0:
 
         return -999
+
 
     return (
 
@@ -906,16 +1261,17 @@ def portfolio_sharpe(weights):
 
         RISK_FREE_RATE
 
-    ) / volatility
+    ) / vol
 
 
 # ============================================================
-# 19. GENERAL CONSTRAINTS
+# 22. STANDARD CONSTRAINTS
 # ============================================================
 
 sum_constraint = {
 
-    "type": "eq",
+    "type":
+        "eq",
 
     "fun":
         lambda w:
@@ -924,7 +1280,7 @@ sum_constraint = {
 }
 
 
-constraints = (
+standard_constraints = (
     sum_constraint,
 )
 
@@ -936,21 +1292,29 @@ bounds = tuple(
         MAX_WEIGHT
     )
 
-    for _ in range(
+    for _
+    in range(
         N_ASSETS
     )
 
 )
 
 
-initial_weights = np.repeat(
-    1 / N_ASSETS,
+initial_weights = (
+
+    np.ones(
+        N_ASSETS
+    )
+
+    /
+
     N_ASSETS
+
 )
 
 
 # ============================================================
-# 20. MAXIMUM SHARPE
+# 23. MAXIMUM SHARPE
 # ============================================================
 
 max_sharpe_result = minimize(
@@ -964,11 +1328,16 @@ max_sharpe_result = minimize(
 
     bounds=bounds,
 
-    constraints=constraints,
+    constraints=standard_constraints,
 
     options={
-        "maxiter": 10000,
-        "ftol": 1e-12
+
+        "maxiter":
+            10000,
+
+        "ftol":
+            1e-12
+
     }
 
 )
@@ -980,15 +1349,7 @@ max_sharpe_weights = (
 
 
 # ============================================================
-# 21. MAXIMUM RETURN
-# ============================================================
-#
-# NOTE:
-#
-# This SHOULD generally put 20% into the five assets
-# with highest expected returns.
-#
-# That is mathematically correct.
+# 24. MAXIMUM RETURN
 # ============================================================
 
 max_return_result = minimize(
@@ -1002,11 +1363,16 @@ max_return_result = minimize(
 
     bounds=bounds,
 
-    constraints=constraints,
+    constraints=standard_constraints,
 
     options={
-        "maxiter": 10000,
-        "ftol": 1e-12
+
+        "maxiter":
+            10000,
+
+        "ftol":
+            1e-12
+
     }
 
 )
@@ -1018,7 +1384,7 @@ max_return_weights = (
 
 
 # ============================================================
-# 22. MINIMUM VOLATILITY
+# 25. MINIMUM VOLATILITY
 # ============================================================
 
 min_vol_result = minimize(
@@ -1031,11 +1397,16 @@ min_vol_result = minimize(
 
     bounds=bounds,
 
-    constraints=constraints,
+    constraints=standard_constraints,
 
     options={
-        "maxiter": 10000,
-        "ftol": 1e-12
+
+        "maxiter":
+            10000,
+
+        "ftol":
+            1e-12
+
     }
 
 )
@@ -1047,60 +1418,48 @@ min_vol_weights = (
 
 
 # ============================================================
-# 23. AGGRESSIVE DIVERSIFIED PORTFOLIO
+# 26. AGGRESSIVE DIVERSIFIED
 # ============================================================
 #
-# THIS IS THE PORTFOLIO MOST RELEVANT TO YOUR CASE.
-#
-# Objective:
-#
-# Maximize expected return
-#
-# BUT:
-#
-# - no asset > 20%
-# - Rare Earth <= 7.5%
-# - no zero-weight concentration solution
-# - minimum diversification
-# - portfolio volatility <= 18%
-#
-# This gives the optimizer freedom to seek return while
-# preventing a silly five-assets-at-20% solution.
+# Seek high returns while maintaining diversification.
 # ============================================================
-
-
-# ------------------------------------------------------------
-# Individual custom bounds
-# ------------------------------------------------------------
 
 aggressive_bounds = []
 
 
 for asset in assets:
 
-    name = asset.lower()
+    name = (
+        asset.lower()
+    )
 
 
-    # Rare earth thematic position
-    if "rare earth" in name:
+    if (
+        "rare earth"
+        in name
+    ):
 
         aggressive_bounds.append(
             (0.02, 0.075)
         )
 
 
-    # Hong Kong
-    elif "hong kong" in name:
+    elif (
+        "hong kong"
+        in name
+    ):
 
         aggressive_bounds.append(
             (0.01, 0.10)
         )
 
 
-    # Commodity / Gold
     elif (
-        "commodity" in name
-        or "gold" in name
+        "commodity"
+        in name
+        or
+        "gold"
+        in name
     ):
 
         aggressive_bounds.append(
@@ -1108,31 +1467,36 @@ for asset in assets:
         )
 
 
-    # High yield
-    elif "high yield" in name:
+    elif (
+        "high yield"
+        in name
+    ):
 
         aggressive_bounds.append(
             (0.02, 0.15)
         )
 
 
-    # Asian Aggregate
-    elif "asian pacific" in name:
+    elif (
+        "asian pacific"
+        in name
+    ):
 
         aggressive_bounds.append(
             (0.01, 0.10)
         )
 
 
-    # Treasury bond index
-    elif "treasury bond" in name:
+    elif (
+        "treasury bond"
+        in name
+    ):
 
         aggressive_bounds.append(
             (0.01, 0.08)
         )
 
 
-    # Everything else
     else:
 
         aggressive_bounds.append(
@@ -1145,17 +1509,12 @@ aggressive_bounds = tuple(
 )
 
 
-# ------------------------------------------------------------
-# Maximum portfolio volatility = 18%
-#
-# Constraint must be >= 0:
-#
-# 18% - portfolio volatility >= 0
-# ------------------------------------------------------------
+# Maximum 18% annual volatility
 
 volatility_constraint = {
 
-    "type": "ineq",
+    "type":
+        "ineq",
 
     "fun":
         lambda w:
@@ -1175,18 +1534,12 @@ aggressive_constraints = (
 )
 
 
-# Start from equal weights
-aggressive_initial = (
-    initial_weights.copy()
-)
-
-
 aggressive_result = minimize(
 
     lambda w:
         -portfolio_return(w),
 
-    aggressive_initial,
+    initial_weights,
 
     method="SLSQP",
 
@@ -1195,23 +1548,16 @@ aggressive_result = minimize(
     constraints=aggressive_constraints,
 
     options={
-        "maxiter": 20000,
-        "ftol": 1e-12
+
+        "maxiter":
+            20000,
+
+        "ftol":
+            1e-12
+
     }
 
 )
-
-
-if not aggressive_result.success:
-
-    print(
-        "\nWARNING: Aggressive diversified "
-        "optimization did not fully converge:"
-    )
-
-    print(
-        aggressive_result.message
-    )
 
 
 aggressive_weights = (
@@ -1220,20 +1566,27 @@ aggressive_weights = (
 
 
 # ============================================================
-# 24. EQUAL WEIGHT
+# 27. EQUAL WEIGHT
 # ============================================================
 
-equal_weights = np.repeat(
-    1 / N_ASSETS,
+equal_weights = (
+
+    np.ones(
+        N_ASSETS
+    )
+
+    /
+
     N_ASSETS
+
 )
 
 
 # ============================================================
-# 25. PORTFOLIO SUMMARY
+# 28. SUMMARY FUNCTION
 # ============================================================
 
-def summarize_portfolio(
+def summarize(
     name,
     weights
 ):
@@ -1244,40 +1597,50 @@ def summarize_portfolio(
             name,
 
         "Expected_Return":
-            portfolio_return(weights),
+            portfolio_return(
+                weights
+            ),
 
         "Volatility":
-            portfolio_volatility(weights),
+            portfolio_volatility(
+                weights
+            ),
 
         "Sharpe":
-            portfolio_sharpe(weights)
+            portfolio_sharpe(
+                weights
+            )
 
     }
 
 
+# ============================================================
+# 29. PORTFOLIO COMPARISON
+# ============================================================
+
 portfolio_summary = pd.DataFrame([
 
-    summarize_portfolio(
+    summarize(
         "Maximum Sharpe",
         max_sharpe_weights
     ),
 
-    summarize_portfolio(
+    summarize(
         "Maximum Return",
         max_return_weights
     ),
 
-    summarize_portfolio(
+    summarize(
         "Aggressive Diversified",
         aggressive_weights
     ),
 
-    summarize_portfolio(
+    summarize(
         "Minimum Volatility",
         min_vol_weights
     ),
 
-    summarize_portfolio(
+    summarize(
         "Equal Weight",
         equal_weights
     )
@@ -1285,36 +1648,40 @@ portfolio_summary = pd.DataFrame([
 ])
 
 
-portfolio_summary_display = (
+summary_display = (
     portfolio_summary.copy()
 )
 
 
-portfolio_summary_display[
+summary_display[
     "Expected_Return"
 ] *= 100
 
-portfolio_summary_display[
+summary_display[
     "Volatility"
 ] *= 100
 
 
-print("\n" + "=" * 90)
+print("\n" + "=" * 100)
 print("PORTFOLIO COMPARISON")
-print("=" * 90)
+print("=" * 100)
 
 
 print(
-    portfolio_summary_display
+
+    summary_display
+
     .round(2)
+
     .to_string(
         index=False
     )
+
 )
 
 
 # ============================================================
-# 26. WEIGHT TABLE
+# 30. WEIGHTS
 # ============================================================
 
 weights_table = pd.DataFrame({
@@ -1323,79 +1690,106 @@ weights_table = pd.DataFrame({
         assets,
 
     "Maximum_Sharpe":
-        max_sharpe_weights * 100,
+        max_sharpe_weights
+        *
+        100,
 
     "Maximum_Return":
-        max_return_weights * 100,
+        max_return_weights
+        *
+        100,
 
     "Aggressive_Diversified":
-        aggressive_weights * 100,
+        aggressive_weights
+        *
+        100,
 
     "Minimum_Volatility":
-        min_vol_weights * 100,
+        min_vol_weights
+        *
+        100,
 
     "Equal_Weight":
-        equal_weights * 100
+        equal_weights
+        *
+        100
 
 })
 
 
-print("\n" + "=" * 90)
+print("\n" + "=" * 100)
 print("PORTFOLIO WEIGHTS (%)")
-print("=" * 90)
+print("=" * 100)
 
 
 print(
+
     weights_table
+
     .round(2)
+
     .to_string(
         index=False
     )
+
 )
 
 
 # ============================================================
-# 27. AGGRESSIVE PORTFOLIO - SORTED
+# 31. RECOMMENDED PORTFOLIO
 # ============================================================
 
-print("\n" + "=" * 90)
-print("RECOMMENDED AGGRESSIVE DIVERSIFIED PORTFOLIO")
-print("=" * 90)
-
-
-aggressive_output = (
+recommended = (
 
     weights_table[
+
         [
             "Asset",
+
             "Aggressive_Diversified"
         ]
+
     ]
 
     .sort_values(
+
         "Aggressive_Diversified",
+
         ascending=False
+
     )
 
 )
+
+
+print("\n" + "=" * 100)
+print("AGGRESSIVE DIVERSIFIED PORTFOLIO")
+print("=" * 100)
 
 
 print(
-    aggressive_output
+
+    recommended
+
     .round(2)
+
     .to_string(
         index=False
     )
+
 )
 
 
 # ============================================================
-# 28. MONTE CARLO
+# 32. MONTE CARLO
 # ============================================================
 
-np.random.seed(42)
+np.random.seed(
+    42
+)
 
-simulation_results = []
+
+simulations = []
 
 
 for _ in range(
@@ -1406,14 +1800,22 @@ for _ in range(
         N_ASSETS
     )
 
-    w /= w.sum()
+
+    w /= (
+        w.sum()
+    )
 
 
-    if w.max() > MAX_WEIGHT:
+    if (
+        w.max()
+        >
+        MAX_WEIGHT
+    ):
+
         continue
 
 
-    simulation_results.append({
+    simulations.append({
 
         "Return":
             portfolio_return(w),
@@ -1428,12 +1830,12 @@ for _ in range(
 
 
 simulation_df = pd.DataFrame(
-    simulation_results
+    simulations
 )
 
 
 # ============================================================
-# 29. PORTFOLIO MAP
+# 33. PORTFOLIO MAP
 # ============================================================
 
 plt.figure(
@@ -1446,12 +1848,14 @@ plt.scatter(
     simulation_df[
         "Volatility"
     ]
-    * 100,
+    *
+    100,
 
     simulation_df[
         "Return"
     ]
-    * 100,
+    *
+    100,
 
     s=6,
 
@@ -1460,7 +1864,7 @@ plt.scatter(
 )
 
 
-portfolio_points = [
+points = [
 
     (
         "Maximum Sharpe",
@@ -1498,19 +1902,21 @@ for (
     weights,
     marker,
     size
-) in portfolio_points:
+) in points:
 
     plt.scatter(
 
         portfolio_volatility(
             weights
         )
-        * 100,
+        *
+        100,
 
         portfolio_return(
             weights
         )
-        * 100,
+        *
+        100,
 
         marker=marker,
 
@@ -1538,7 +1944,7 @@ plt.legend()
 plt.tight_layout()
 
 plt.savefig(
-    "portfolio_map_corrected.png",
+    "portfolio_map_final.png",
     dpi=300
 )
 
@@ -1546,12 +1952,14 @@ plt.show()
 
 
 # ============================================================
-# 30. AGGRESSIVE PORTFOLIO CHART
+# 34. RECOMMENDED WEIGHTS CHART
 # ============================================================
 
-aggressive_plot = pd.Series(
+recommended_plot = pd.Series(
 
-    aggressive_weights * 100,
+    aggressive_weights
+    *
+    100,
 
     index=assets
 
@@ -1565,7 +1973,7 @@ plt.figure(
 )
 
 
-aggressive_plot.plot(
+recommended_plot.plot(
     kind="bar"
 )
 
@@ -1586,7 +1994,7 @@ plt.xticks(
 plt.tight_layout()
 
 plt.savefig(
-    "aggressive_diversified_weights.png",
+    "recommended_weights_final.png",
     dpi=300
 )
 
@@ -1594,109 +2002,148 @@ plt.show()
 
 
 # ============================================================
-# 31. EXPORT RESULTS
+# 35. EXPORT
 # ============================================================
 
 with pd.ExcelWriter(
-    "portfolio_optimization_corrected.xlsx",
+
+    "portfolio_optimization_final.xlsx",
+
     engine="openpyxl"
+
 ) as writer:
 
+
     prices.to_excel(
+
         writer,
-        sheet_name="Clean Prices"
+
+        sheet_name="Corrected Prices"
+
     )
 
-    weekly_prices_common.to_excel(
+
+    weekly_prices.to_excel(
+
         writer,
+
         sheet_name="Weekly Prices"
+
     )
+
 
     returns.to_excel(
+
         writer,
+
         sheet_name="Weekly Returns"
+
     )
+
 
     sanity_table.to_excel(
+
         writer,
-        sheet_name="Data Sanity",
+
+        sheet_name="Sanity Check",
+
         index=False
+
     )
+
 
     asset_statistics.to_excel(
+
         writer,
+
         sheet_name="Asset Statistics"
+
     )
+
 
     correlation_matrix.to_excel(
+
         writer,
+
         sheet_name="Correlation"
+
     )
+
 
     cov_matrix.to_excel(
+
         writer,
+
         sheet_name="Covariance"
+
     )
+
 
     weights_table.to_excel(
+
         writer,
+
         sheet_name="Portfolio Weights",
+
         index=False
+
     )
+
 
     portfolio_summary.to_excel(
+
         writer,
+
         sheet_name="Portfolio Summary",
-        index=False
-    )
 
-    simulation_df.to_excel(
-        writer,
-        sheet_name="Monte Carlo",
         index=False
+
     )
 
 
 # ============================================================
-# 32. FINAL CHECKS
+# 36. FINISH
 # ============================================================
 
-print("\n" + "=" * 90)
-print("FINAL CHECK")
-print("=" * 90)
+print("\n" + "=" * 100)
+print("COMPLETE")
+print("=" * 100)
 
 
 print(
-    f"\nMaximum Sharpe weights: "
-    f"{max_sharpe_weights.sum() * 100:.4f}%"
+    "\nFiles created:"
 )
+
 
 print(
-    f"Maximum Return weights: "
-    f"{max_return_weights.sum() * 100:.4f}%"
+    "1. portfolio_optimization_final.xlsx"
 )
+
 
 print(
-    f"Aggressive Diversified weights: "
-    f"{aggressive_weights.sum() * 100:.4f}%"
+    "2. portfolio_map_final.png"
 )
+
 
 print(
-    f"Minimum Volatility weights: "
-    f"{min_vol_weights.sum() * 100:.4f}%"
+    "3. recommended_weights_final.png"
 )
 
-
-print("\nFiles created:")
 
 print(
-    "1. portfolio_optimization_corrected.xlsx"
+    "\nIMPORTANT:"
 )
 
-print(
-    "2. portfolio_map_corrected.png"
-)
 
-print(
-    "3. aggressive_diversified_weights.png"
-)
+if problem_found:
+
+    print(
+        "Some sanity warnings remain. "
+        "Inspect them before accepting the portfolio."
+    )
+
+else:
+
+    print(
+        "No major sanity warnings detected."
+    )
