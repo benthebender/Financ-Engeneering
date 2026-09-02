@@ -1,0 +1,15 @@
+# Mortality model summary
+
+cohort_now                             : 100000
+reach_payout_age_total                 : 91,077.4713
+reach_payout_age_pct                   : 91.0775
+reach_payout_age_pct_male              : 88.5568
+reach_payout_age_pct_female            : 93.5982
+life_expectancy_at_payout_total        : 18.2586
+life_expectancy_at_payout_male         : 16.7740
+life_expectancy_at_payout_female       : 19.6633
+expected_annuity_years_per_life        : 18.7586
+expected_total_annuity_years           : 1,708,489.6060
+peak_death_age                         : 81
+peak_death_count                       : 3,293.2498
+last_survivors_at_max_age              : 67.3977
