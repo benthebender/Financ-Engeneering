@@ -1,0 +1,17 @@
+curve source : C:\Users\benlu\Financ-Engeneering\Financ-Engeneering\Data\Swap curves.xlsx
+curve date   : 2026-08-31  (10 tenors 1Y..10Y, max 10y)
+rates (%)    : 1Y=3.013, 2Y=3.140, 3Y=3.167, 4Y=3.182, 5Y=3.201, 6Y=3.224, 7Y=3.252, 8Y=3.282, 9Y=3.314, 10Y=3.346
+model        : hw engine, vol=0.15 (black), a=0.03, 12 steps/yr
+
+==============================================================================
+  7y single-callable - par coupon & spread over bullet by non-call period
+==============================================================================
+ nc  n_call_dates  best_call_year  coupon_bp  d_coupon_vs_NC2_bp  bullet_bp  spread_vs_bullet_bp  price_check
+  2             1               2     351.11                0.00     325.19                25.92       100.00
+  3             1               3     346.52               -4.59     325.19                21.33       100.00
+  4             1               4     340.79              -10.31     325.19                15.60       100.00
+  5             1               5     335.37              -15.74     325.19                10.18       100.00
+  6             1               6     330.10              -21.00     325.19                 4.91       100.00
+
+wrote Outputs Task 2\7y NC3 single\nc_table_7y_single.csv
+

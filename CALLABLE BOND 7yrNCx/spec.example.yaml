@@ -1,0 +1,31 @@
+# Callable-bond structures for:  python main.py --config spec.example.yaml
+# Each item maps straight onto pricer.CallableSpec(**item).
+
+# 7y non-call 2, single call (prices every year 2..6, keeps the best)
+- maturity: 7
+  nc_period: 2
+  call_type: single
+
+# same structure, fully Bermudan
+- maturity: 7
+  nc_period: 2
+  call_type: bermudan
+
+# 10y NC1 Bermudan with a 101 call price
+- maturity: 10
+  nc_period: 1
+  call_type: bermudan
+  call_price: 101.0
+
+# irregular one-off schedule - nc_period/call_type are ignored, [3, 5, 7]
+# is treated as a Bermudan over exactly those years
+- maturity: 10
+  nc_period: 1
+  call_type: single
+  call_schedule: [3, 5, 7]
+
+# a single one-off call at year 5
+- maturity: 7
+  nc_period: 1
+  call_type: single
+  call_schedule: [5]

@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.pytest_cache/
+_run/
+results/
+charts/
+_charts_test/
