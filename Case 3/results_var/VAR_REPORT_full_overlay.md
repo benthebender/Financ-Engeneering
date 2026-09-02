@@ -1,4 +1,4 @@
-# Case 3b - 1-year 99.5% VaR  (full deployment)
+# Case 3b - 1-year 99.0% VaR  (full deployment)
 
 Valuation date 2026-09-02. Historical simulation, 468 overlapping 52-week scenarios from ~520 weeks of factor history.
 
@@ -9,28 +9,37 @@ Valuation date 2026-09-02. Historical simulation, 468 overlapping 52-week scenar
 - Total assets: EUR 10.00bn
 - Guaranteed pension liability PV: EUR 6.81bn
 - Funding ratio (assets / liability PV): 1.47
-- Futures short overlay ratio: 50%
+
+## Risk-control overlay  (99% 1-year equity VaR vs economic limit)
+
+- Economic surplus (assets - liability PV): EUR 3.19bn
+- Board funding-ratio floor (1-in-100 yr): 1.20  => max tolerable 1y asset loss EUR 1.83bn
+- Less non-equity surplus VaR (rates mismatch + FX + HY + longevity buffer): EUR 916m
+- **Equity 99% 1y VaR limit** = EUR 911m  (19.8% of equity MV, 28.6% of economic surplus; binding: funding-ratio floor)
+- Unhedged equity 99% 1y VaR (HS): EUR 964m
+- rule: max(0, 1 - 911m / 964m) = 5.5%   [within +/-10% band - hold 6%]
+- Applied futures short: 5.5% of equity MV (beta 1.00); no-trade band +/-10%
 
 ## Headline VaR / ES  (1-year, EUR)
 
 | | Historical VaR | Historical ES | Parametric VaR | 1y P&L vol | worst scenario |
 |---|--:|--:|--:|--:|--:|
-| **Asset VaR** | 2,237.1m | 2,290.0m | 2,145.6m | 934.6m | 2,352.8m |
-| **Surplus VaR** | 1,105.4m | 1,124.2m | 1,311.7m | 677.9m | 1,146.7m |
+| **Asset VaR** | 2,540.7m | 2,679.9m | 2,189.6m | 1,155.6m | 2,835.1m |
+| **Surplus VaR** | 1,129.7m | 1,207.5m | 1,345.3m | 866.8m | 1,360.4m |
 
-Asset VaR as % of assets: 22.37%   |   Surplus VaR as % of assets: 11.05%   |   Surplus VaR as % of liability: 16.23%
+Asset VaR as % of assets: 25.41%   |   Surplus VaR as % of assets: 11.30%   |   Surplus VaR as % of liability: 16.59%
 
-## Standalone 99.5% loss by risk driver  (indicative, not additive)
+## Standalone 99% loss by risk driver  (indicative, not additive)
 
-| driver | 1y 99.5% loss (EUR) |
+| driver | 1y 99% loss (EUR) |
 |---|--:|
-| liability_pnl | 3,019.3m |
-| fi_bonds | 1,676.9m |
-| futures_overlay | 1,205.8m |
-| equity | 997.8m |
-| fx_hedge_residual | 200.6m |
-| rates_credit_idx | 40.3m |
-| high_yield | 28.0m |
+| liability_pnl | 2,919.4m |
+| fi_bonds | 1,631.0m |
+| equity | 963.6m |
+| fx_hedge_residual | 187.1m |
+| futures_overlay | 121.1m |
+| rates_credit_idx | 39.0m |
+| high_yield | 26.7m |
 
 ## Deterministic stress tests  (EUR P&L)
 
@@ -53,5 +62,6 @@ Asset VaR as % of assets: 22.37%   |   Surplus VaR as % of assets: 11.05%   |   
 - Bonds & liability: EUR curve only. Bonds repriced by modified duration + convexity at each bond's maturity; liability by full revaluation on the shifted zero curve. Govvie/SSA spread risk is in the stress tests only.
 - Every USD sleeve is FX-swapped to EUR (rolled 1y); spot-FX risk removed, residual = change in the EUR-USD 1y rate differential. HKD leg ignored.
 - Return book = 10 x EUR 0.5bn contributions deployed at target weights (strategic / fully-funded steady state). `deployment=t0` gives the inception snapshot (return book ~ 0).
-- Parametric VaR uses a Normal 99.5% (z = 2.576) on the scenario P&L.
+- Parametric VaR uses a Normal 99% (z = 2.326) on the scenario P&L.
 - Longevity is a stress line, not in the 1y HS distribution.
+- Overlay: unhedged equity 99% 1y VaR (HS) -> HedgeRatio = max(0, 1 - VaR_limit / VaR_unhedged), clamped [0,1]; contracts via Equity_MV x beta x ratio / (future_price x multiplier) (futures.py). Buffer = no-trade band to damp turnover; overlay is risk control, not market timing.

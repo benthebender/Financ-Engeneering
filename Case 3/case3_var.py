@@ -51,7 +51,7 @@ FI_PORTFOLIO_CSV = HERE / "results" / "fixed_income_portfolio.csv"
 RETURN_XLSX = HERE / "portfolio_optimization_final.xlsx"
 
 EUR_BN = 1e9
-Z = 2.5758290  # standard normal 99.5% one-sided
+Z = 2.3263479  # standard normal 99% one-sided (was 2.5758 for 99.5%)
 
 
 # ==========================================================================
@@ -60,7 +60,7 @@ Z = 2.5758290  # standard normal 99.5% one-sided
 @dataclass(frozen=True)
 class Config:
     valuation_date: str = "2026-09-02"
-    confidence: float = 0.995
+    confidence: float = 0.99               # 99% 1-year VaR (insurer risk measure)
     horizon_weeks: int = 52                 # 1-year VaR
     lookback_weeks: int = 520               # ~10y of weekly history
     deployment: str = "full"               # "full" (5bn FI + 5bn return) | "t0"
@@ -68,7 +68,14 @@ class Config:
     contribution_per_year_eur: float = 0.5 * EUR_BN
     contribution_years: int = 10
     return_weight_set: str = "Aggressive_Diversified"
-    future_hedge_ratio: float = 0.0        # short overlay as a fraction of equity MV
+    # futures overlay: None => set by the risk-control rule (derive limit, then
+    # HedgeRatio = max(0, 1 - VaR_limit / VaR_unhedged)); a float pins it.
+    future_hedge_ratio: "float | None" = None
+    equity_beta: float = 1.0               # sleeve beta vs the hedging index
+    overlay_buffer: float = 0.10           # no-trade band around the limit (+/-10%)
+    min_funding_ratio: float = 1.20        # board floor for assets / liability PV
+    var_limit_eur: "float | None" = None   # explicit equity 99% 1y VaR limit; else derived
+    guaranteed_rate: float = 0.01
     guaranteed_rate: float = 0.01
     pension_share: float = 0.50
     lump_sum_share: float = 0.50
@@ -314,29 +321,37 @@ class Scenarios:
     n: int
 
 
-def build_scenarios(cfg: Config) -> Scenarios:
+def weekly_changes(cfg: Config) -> dict:
+    """Aligned weekly factor moves over the lookback window:
+    d_eur (abs rate change per tenor), d_usd1 / d_eur1 (1y rate change),
+    r_idx (log return per index).  Shared by HS and Monte Carlo."""
     eur_hist = load_swap_history(DATA / "EUR SWAP CURVES 1-30yr.xlsx", r"(\d+)\s*yr")
     usd_hist = load_swap_history(DATA / "USD SWAP CURVE 1-30yr.xlsx", r"USOSFR(\d+)")
     idx_hist = load_index_history()
-    eurusd = load_eurusd_history(DATA / "EUR USD Rates.xlsx")
 
-    # the weekly index panel is the master grid; slower series are aligned onto it
     master = idx_hist.index[-cfg.lookback_weeks:]
     if len(master) < cfg.horizon_weeks + 30:
         raise RuntimeError(f"only {len(master)} weekly index obs - not enough")
 
     def onto_master(df: pd.DataFrame) -> pd.DataFrame:
-        return (df.reindex(df.index.union(master)).ffill().bfill()
-                  .reindex(master))
+        return (df.reindex(df.index.union(master)).ffill().bfill().reindex(master))
 
     eur = onto_master(eur_hist)
     usd = onto_master(usd_hist)
     idx = idx_hist.reindex(master).ffill().bfill()
 
-    d_eur = eur.diff().iloc[1:]                        # weekly abs rate change
-    d_usd1 = usd.iloc[:, 0].diff().iloc[1:]
-    d_eur1 = eur.iloc[:, 0].diff().iloc[1:]
-    r_idx = np.log(idx).diff().iloc[1:]               # weekly log return
+    return {
+        "d_eur": eur.diff().iloc[1:],
+        "d_usd1": usd.iloc[:, 0].diff().iloc[1:].rename("usd_1y"),
+        "d_eur1": eur.iloc[:, 0].diff().iloc[1:].rename("eur_1y"),
+        "r_idx": np.log(idx).diff().iloc[1:],
+        "eur_tenors": eur.columns.to_numpy(dtype=float),
+    }
+
+
+def build_scenarios(cfg: Config) -> Scenarios:
+    wc = weekly_changes(cfg)
+    d_eur, d_usd1, d_eur1, r_idx = wc["d_eur"], wc["d_usd1"], wc["d_eur1"], wc["r_idx"]
 
     h = cfg.horizon_weeks
     ann_eur = d_eur.rolling(h).sum().dropna()
@@ -358,9 +373,9 @@ def build_scenarios(cfg: Config) -> Scenarios:
 # ==========================================================================
 # REPRICING
 # ==========================================================================
-def reprice(book: Book, sc: Scenarios) -> pd.DataFrame:
+def reprice(book: Book, sc: Scenarios, cfg: "Config | None" = None) -> pd.DataFrame:
     """P&L (EUR) of every sub-book under every annual scenario."""
-    cfg = book.cfg
+    cfg = cfg or book.cfg
     grid, zero = book.base_grid, book.base_zero
     tenors = sc.eur_rate_chg.columns.to_numpy(dtype=float)
     chg = sc.eur_rate_chg.to_numpy()                       # (n_scen, n_tenor)
@@ -386,9 +401,10 @@ def reprice(book: Book, sc: Scenarios) -> pd.DataFrame:
 
     # --- futures short overlay (broad equity proxy = MSCI World) -----------
     fut_pnl = np.zeros(sc.n)
-    if cfg.future_hedge_ratio > 0 and "MSCI World Index" in sc.idx_logret.columns:
+    ratio = cfg.future_hedge_ratio or 0.0
+    if ratio > 0 and "MSCI World Index" in sc.idx_logret.columns:
         eq_mv = book.sleeves.loc[book.sleeves["kind"] == "EQUITY", "mv_eur"].sum()
-        short_notional = cfg.future_hedge_ratio * eq_mv
+        short_notional = ratio * cfg.equity_beta * eq_mv
         rw = sc.idx_logret["MSCI World Index"].to_numpy()
         fut_pnl = -short_notional * (np.exp(rw) - 1.0)
 
@@ -435,6 +451,68 @@ def var_stats(pnl: np.ndarray, conf: float) -> dict:
         "worst": -pnl.min(),
         "n_scen": pnl.size,
     }
+
+
+# ==========================================================================
+# RISK-CONTROL OVERLAY  (99% 1-year equity VaR vs an economic limit)
+# ==========================================================================
+def derive_var_limit(book: Book, cfg: Config, non_equity_surplus_var: float) -> dict:
+    """Economically-anchored 99% 1-year VaR limit for the equity sleeve.
+
+    Anchor: the board sets a floor on the funding ratio (assets / liability PV)
+    that must hold in a 1-in-100 year.  The maximum tolerable total 1y asset
+    loss is then
+
+        loss_budget = assets - min_funding_ratio * liability_PV
+
+    The non-equity surplus risk (rate mismatch, FX, HY, longevity buffer) is
+    subtracted; what remains is the equity sleeve's 99% 1y VaR limit.  Also
+    reported: the limit as a share of equity MV and of economic surplus, plus a
+    surplus-at-risk cross-check (limit <= 1/3 of economic surplus).
+    """
+    assets = book.asset_mv
+    liab = book.liability_pv
+    surplus = assets - liab
+    eq_mv = book.sleeves.loc[book.sleeves["kind"] == "EQUITY", "mv_eur"].sum()
+
+    loss_budget = assets - cfg.min_funding_ratio * liab
+    equity_limit = max(0.0, loss_budget - non_equity_surplus_var)
+    sar_cap = surplus / 3.0                    # keep >=2/3 of the buffer in a 1-in-100 yr
+
+    binding = "funding-ratio floor" if equity_limit <= sar_cap else "surplus-at-risk cap"
+    limit = min(equity_limit, sar_cap)
+
+    return {
+        "assets": assets, "liability_pv": liab, "economic_surplus": surplus,
+        "equity_mv": eq_mv, "min_funding_ratio": cfg.min_funding_ratio,
+        "loss_budget_at_floor": loss_budget,
+        "non_equity_surplus_var": non_equity_surplus_var,
+        "equity_limit_from_floor": equity_limit,
+        "surplus_at_risk_cap": sar_cap,
+        "binding_constraint": binding,
+        "var_limit_eur": limit,
+        "limit_pct_of_equity_mv": limit / eq_mv if eq_mv else float("nan"),
+        "limit_pct_of_surplus": limit / surplus if surplus else float("nan"),
+    }
+
+
+def target_hedge_ratio(var_unhedged: float, var_limit: float) -> float:
+    """Rule: HedgeRatio = max(0, 1 - VaR_limit / VaR_unhedged), clamped to [0, 1].
+    Never a net short (ratio <= 1)."""
+    if var_unhedged <= 0:
+        return 0.0
+    return float(min(1.0, max(0.0, 1.0 - var_limit / var_unhedged)))
+
+
+def applied_hedge_ratio(var_unhedged: float, var_limit: float,
+                        current_ratio: float, buffer: float) -> tuple[float, str]:
+    """Add the no-trade band (rule 9): only move the hedge if VaR is outside
+    +/- `buffer` of the limit; otherwise hold the current ratio."""
+    tgt = target_hedge_ratio(var_unhedged, var_limit)
+    lo, hi = var_limit * (1 - buffer), var_limit * (1 + buffer)
+    if lo <= var_unhedged <= hi:
+        return current_ratio, f"within +/-{buffer:.0%} band - hold {current_ratio:.0%}"
+    return tgt, f"outside band - move to {tgt:.0%}"
 
 
 def stress_tests(book: Book) -> pd.DataFrame:
@@ -494,12 +572,39 @@ def _mn(x):
 
 
 def run(cfg: Config, tag: str | None = None) -> dict:
+    from dataclasses import replace as _replace
     OUT.mkdir(exist_ok=True)
-    tag = tag or (cfg.deployment + (f"_hedge{int(cfg.future_hedge_ratio*100)}"
-                                    if cfg.future_hedge_ratio else ""))
     book = build_book(cfg)
     sc = build_scenarios(cfg)
-    pnl = reprice(book, sc)
+
+    # ---- risk-control overlay: size the futures short from the 99% equity VaR ----
+    unhedged = reprice(book, sc, _replace(cfg, future_hedge_ratio=0.0))
+    eq_var_unhedged = var_stats(unhedged["equity"].to_numpy(), cfg.confidence)["hist_var"]
+    non_eq_surplus_var = var_stats(
+        (unhedged["surplus_pnl"] - unhedged["equity"]).to_numpy(), cfg.confidence
+    )["hist_var"]
+    limit_info = derive_var_limit(book, cfg, non_eq_surplus_var)
+    var_limit = cfg.var_limit_eur if cfg.var_limit_eur is not None else limit_info["var_limit_eur"]
+    overlay_ok = eq_var_unhedged > 1e6 and limit_info["economic_surplus"] > 0
+
+    if not overlay_ok:
+        ratio = float(cfg.future_hedge_ratio or 0.0)
+        overlay_note = "overlay not applicable (no return book / pre-funding snapshot)"
+        var_limit = float("nan")
+    elif cfg.future_hedge_ratio is not None:
+        ratio = float(cfg.future_hedge_ratio)
+        overlay_note = f"hedge ratio pinned at {ratio:.0%} (rule would give " \
+                       f"{target_hedge_ratio(eq_var_unhedged, var_limit):.1%})"
+    else:
+        ratio = target_hedge_ratio(eq_var_unhedged, var_limit)
+        _, band = applied_hedge_ratio(eq_var_unhedged, var_limit, ratio, cfg.overlay_buffer)
+        overlay_note = (f"rule: max(0, 1 - {var_limit/1e6:,.0f}m / "
+                        f"{eq_var_unhedged/1e6:,.0f}m) = {ratio:.1%}   [{band}]")
+
+    cfg = _replace(cfg, future_hedge_ratio=ratio, var_limit_eur=var_limit)
+    tag = tag or f"{cfg.deployment}_h{int(round(ratio*100)):02d}"
+
+    pnl = reprice(book, sc, cfg)
     pnl.to_csv(OUT / f"scenario_pnl_{tag}.csv", index=False)
 
     asset = var_stats(pnl["asset_pnl"].to_numpy(), cfg.confidence)
@@ -529,8 +634,24 @@ def run(cfg: Config, tag: str | None = None) -> dict:
       f"{book.sleeves['mv_eur'].sum()/1e9:,.2f}bn")
     L(f"- Total assets: EUR {book.asset_mv/1e9:,.2f}bn")
     L(f"- Guaranteed pension liability PV: EUR {book.liability_pv/1e9:,.2f}bn")
-    L(f"- Funding ratio (assets / liability PV): {book.asset_mv/book.liability_pv:,.2f}")
-    L(f"- Futures short overlay ratio: {cfg.future_hedge_ratio:.0%}\n")
+    L(f"- Funding ratio (assets / liability PV): {book.asset_mv/book.liability_pv:,.2f}\n")
+
+    li = limit_info
+    L("## Risk-control overlay  (99% 1-year equity VaR vs economic limit)\n")
+    L(f"- Economic surplus (assets - liability PV): EUR {li['economic_surplus']/1e9:,.2f}bn")
+    L(f"- Board funding-ratio floor (1-in-100 yr): {li['min_funding_ratio']:.2f}  "
+      f"=> max tolerable 1y asset loss EUR {li['loss_budget_at_floor']/1e9:,.2f}bn")
+    L(f"- Less non-equity surplus VaR (rates mismatch + FX + HY + longevity buffer): "
+      f"EUR {li['non_equity_surplus_var']/1e6:,.0f}m")
+    L(f"- **Equity 99% 1y VaR limit** = EUR {var_limit/1e6:,.0f}m  "
+      f"({li['limit_pct_of_equity_mv']:.1%} of equity MV, "
+      f"{li['limit_pct_of_surplus']:.1%} of economic surplus; "
+      f"binding: {li['binding_constraint']})")
+    L(f"- Unhedged equity 99% 1y VaR (HS): EUR {eq_var_unhedged/1e6:,.0f}m")
+    L(f"- {overlay_note}")
+    L(f"- Applied futures short: {cfg.future_hedge_ratio:.1%} of equity MV "
+      f"(beta {cfg.equity_beta:.2f}); no-trade band +/-{cfg.overlay_buffer:.0%}\n")
+
     L("## Headline VaR / ES  (1-year, EUR)\n")
     L(f"| | Historical VaR | Historical ES | Parametric VaR | 1y P&L vol | worst scenario |")
     L(f"|---|--:|--:|--:|--:|--:|")
@@ -541,8 +662,8 @@ def run(cfg: Config, tag: str | None = None) -> dict:
     L(f"\nAsset VaR as % of assets: {asset['hist_var']/book.asset_mv:.2%}   |   "
       f"Surplus VaR as % of assets: {surplus['hist_var']/book.asset_mv:.2%}   |   "
       f"Surplus VaR as % of liability: {surplus['hist_var']/book.liability_pv:.2%}\n")
-    L("## Standalone 99.5% loss by risk driver  (indicative, not additive)\n")
-    L("| driver | 1y 99.5% loss (EUR) |")
+    L(f"## Standalone {cfg.confidence:.0%} loss by risk driver  (indicative, not additive)\n")
+    L(f"| driver | 1y {cfg.confidence:.0%} loss (EUR) |")
     L("|---|--:|")
     for c, v in sorted(comp_var.items(), key=lambda kv: -kv[1]):
         L(f"| {c} | {_mn(v)} |")
@@ -563,8 +684,13 @@ def run(cfg: Config, tag: str | None = None) -> dict:
     L("- Return book = 10 x EUR 0.5bn contributions deployed at target weights "
       "(strategic / fully-funded steady state). `deployment=t0` gives the "
       "inception snapshot (return book ~ 0).")
-    L("- Parametric VaR uses a Normal 99.5% (z = 2.576) on the scenario P&L.")
+    L(f"- Parametric VaR uses a Normal {cfg.confidence:.0%} (z = {Z:.3f}) on the scenario P&L.")
     L("- Longevity is a stress line, not in the 1y HS distribution.")
+    L("- Overlay: unhedged equity 99% 1y VaR (HS) -> HedgeRatio = max(0, "
+      "1 - VaR_limit / VaR_unhedged), clamped [0,1]; contracts via "
+      "Equity_MV x beta x ratio / (future_price x multiplier) (futures.py). "
+      "Buffer = no-trade band to damp turnover; overlay is risk control, not "
+      "market timing.")
     (OUT / f"VAR_REPORT_{tag}.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
     print("\n".join(lines))
@@ -623,10 +749,10 @@ def _charts(pnl, asset, surplus, comp_var, stress, cfg, tag):
 if __name__ == "__main__":
     import sys
     if len(sys.argv) > 1:
-        run(Config(deployment=sys.argv[1],
-                   future_hedge_ratio=float(sys.argv[2]) if len(sys.argv) > 2 else 0.0))
+        h = None if len(sys.argv) <= 2 or sys.argv[2] == "auto" else float(sys.argv[2])
+        run(Config(deployment=sys.argv[1], future_hedge_ratio=h))
     else:
         # full suite for the presentation
-        run(Config(deployment="full"), tag="full")
-        run(Config(deployment="t0"), tag="t0_inception")
-        run(Config(deployment="full", future_hedge_ratio=0.50), tag="full_hedge50")
+        run(Config(deployment="full", future_hedge_ratio=0.0), tag="full_unhedged")
+        run(Config(deployment="full"), tag="full_overlay")            # rule-based hedge
+        run(Config(deployment="t0", future_hedge_ratio=0.0), tag="t0_inception")

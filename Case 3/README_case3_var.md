@@ -1,7 +1,10 @@
-# Case 3b - combined book & 1-year 99.5% VaR
+# Case 3b - combined book & 1-year 99% VaR
 
-Ties the two sub-books into one portfolio and runs Historical-Simulation VaR
-(priority 1), plus a parametric cross-check and deterministic stress tests.
+Ties the two sub-books into one portfolio and runs **99% 1-year VaR** by
+Historical Simulation (primary), Monte-Carlo (t-copula, `montecarlo.py`) and a
+parametric check, plus deterministic stress tests and the rule-based futures
+overlay. Full methodology + the economic VaR-limit derivation:
+**`VAR_METHODOLOGY.md`**.
 
 ## Pipeline
 
@@ -18,9 +21,10 @@ Investment portfolio.py --> portfolio_optimization_final.xlsx      (14 indices, 
 Run:
 
 ```bash
-python case3_var.py                 # full suite: full / t0 / full+50% equity hedge
-python case3_var.py full 0.30       # one run: full deployment, 30% futures hedge
-python case3_var.py t0              # inception snapshot
+python case3_var.py                 # HS suite: full_unhedged / full_overlay / t0
+python case3_var.py full auto       # one HS run, rule-based hedge ratio
+python case3_var.py full 0.30       # pin the hedge ratio at 30%
+python montecarlo.py full 25000     # Monte-Carlo (Student-t dof 5 + Gaussian), 25k paths
 ```
 
 ## Funding waterfall
@@ -48,45 +52,66 @@ EUR 5.0bn FI + EUR 5.0bn return). `deployment="t0"` = inception, return book ~ 0
   - **Index sleeves** - own-currency total return (= the EUR-hedged return).
   - **FX hedge residual** - EUR value x change in the EUR-USD 1y rate
     differential (spot-FX risk removed by the swap).
-  - **Futures overlay** - short MSCI World proxy, notional = hedge_ratio x equity
-    MV; ratio is a config knob (the VIX/threshold rule lives elsewhere).
-- **Asset VaR** = 0.5% tail of asset P&L. **Surplus VaR** = 0.5% tail of
+  - **Futures overlay** - short MSCI World proxy, notional = ratio x beta x
+    equity MV. The ratio is set by the risk-control rule (below); `VIX` data,
+    when supplied, will gate the no-trade band width.
+- **Asset VaR** = 1% tail of asset P&L. **Surplus VaR** = 1% tail of
   (asset - liability) P&L.
-- Parametric VaR = Normal 99.5% (z = 2.576) on the scenario P&L.
+- Parametric VaR = Normal 99% (z = 2.326) on the scenario P&L; Monte-Carlo
+  (`montecarlo.py`) is the fat-tail cross-check.
 - Longevity is a stress line, not in the 1y HS distribution.
 
-## Headline results (valuation 2026-09-02)
+## Risk-control overlay (implemented)
 
-| variant | assets | funding ratio | **Asset VaR** | **Surplus VaR** |
-|---|--:|--:|--:|--:|
-| full (5bn FI + 5bn return) | EUR 10.0bn | 1.47 | EUR 2,700m  (27% of assets) | EUR 1,185m  (17% of liability) |
-| t0 inception (FI only) | EUR 5.0bn | 0.73 | EUR 1,677m  (34%) | EUR 970m |
-| full + 50% equity futures hedge | EUR 10.0bn | 1.47 | EUR 2,237m | EUR 1,105m |
+1. unhedged **equity sleeve** 99% 1y VaR (HS, or MC for prudence)
+2. vs the **economic VaR limit** derived in `derive_var_limit()` from the
+   board's minimum funding ratio (1.20): `limit = assets - 1.20 x liability_PV
+   - non_equity_surplus_VaR`  (cross-checked against surplus/3)
+3. `HedgeRatio = max(0, 1 - limit / VaR_unhedged)`, clamped `[0,1]`
+4. contracts via `Equity_MV x beta x ratio / (future_price x multiplier)`
+   (`futures.py::hedge_contracts`)
+5. **no-trade band +/-10%** around the limit (rule 9) to damp turnover
+6. recalculate quarterly; VaR up -> add, down -> reduce, below limit -> remove
+7. risk control, **not** market timing - triggered only by measured VaR vs budget
 
-Historical ES runs ~3-7% above VaR; parametric surplus VaR is ~35% higher than
-HS (fat left tail with only ~470 scenarios - flag this in the deck).
+Full derivation and the recommended EUR 0.9bn limit: `VAR_METHODOLOGY.md`.
 
-**Read:** asset VaR is dominated by the long-duration FI book and equity; but in
+## Headline results (99% 1y, valuation 2026-09-02, full deployment EUR 10.0bn)
+
+| | HS (primary) | Monte-Carlo (t, dof 5) |
+|---|--:|--:|
+| **Asset VaR** | EUR 2.59bn (26% of assets) | EUR 2.40bn |
+| **Surplus VaR** | EUR 1.14bn (17% of liability) | EUR 1.71bn |
+| Unhedged **equity** 99% 1y VaR | EUR 0.96bn | EUR 1.14bn |
+| Derived **equity VaR limit** | EUR 0.91bn | EUR 0.31bn |
+| -> futures hedge ratio | ~0% (in no-trade band) | ~73% |
+| worst stress (2008 replay, surplus) | ~ -EUR 3.2bn | - |
+
+t0 inception (FI only, EUR 5.0bn): Asset VaR EUR 1.63bn, Surplus VaR EUR 0.96bn.
+
+**Read:** asset VaR is dominated by the long-duration FI book + equity; in
 **surplus** terms the FI book and the liability offset on rates, so surplus VaR
-(~EUR 1.2bn) is < half the asset VaR and is driven by equity + the imperfect
-rate match + FX. The killer scenario is the **2008 replay** (equity -45% with
-rates -150bp -> liability balloons): surplus P&L ~ -EUR 3.2bn. A 50% equity
-futures hedge cuts asset VaR ~17% but surplus VaR only ~7% (it only touches
-equity).
+< half the asset VaR. The equity sleeve sits **right at its risk limit** under
+HS (hedge ~0), but Monte-Carlo picks up a rate-rally tail the 10y HS window
+lacks, which eats the risk budget and pushes the derived equity limit down ->
+~73% hedge. The real fix is the **15y vs 22y asset/liability duration
+mismatch** - see `VAR_METHODOLOGY.md` sec. 3. Killer scenario: 2008 replay
+(equity -45%, rates -150bp) -> surplus ~ -EUR 3.2bn.
 
 ## Outputs (`results_var/`, one set per variant tag)
 
 `VAR_REPORT_<tag>.md` - full write-up · `scenario_pnl_<tag>.csv` - 468x P&L by
-driver · `component_var_<tag>.csv` - standalone 99.5% loss per driver ·
+driver · `component_var_<tag>.csv` - standalone 99% loss per driver ·
 `stress_tests_<tag>.csv` · `var_charts_<tag>.png` - P&L histogram + driver
 tornado + stress tornado + empirical CDF.
 
 ## Open / next
 
-- **Futures hedge rule** - `case3_var.py` takes `future_hedge_ratio`; the
-  VIX-threshold logic that sets it is with the strategy team. `futures.py` has
-  the pricing + `hedge_contracts()` sizing.
+- **VIX gating** - when VIX data arrives, use it to widen the no-trade band in
+  calm regimes / tighten it on spikes (a `case3_var.applied_hedge_ratio` hook).
+- **Asset/liability duration gap (15y vs 22y)** - the main structural finding.
+  Extend FI duration or add EUR receiver swaps so the rate tail stops competing
+  with the equity risk budget; then HS and MC agree on a ~EUR 1bn equity limit.
 - **Credit-spread history** - govvie/SSA and HY spread risk is in the stress
-  tests only; a spread time series would let HS pick it up.
-- **Data** - 99.5% / 1y from ~470 overlapping weekly windows is thin in the
-  tail; consider a filtered-HS (EWMA vol) or block-bootstrap variant.
+  tests only; a spread time series would let HS/MC pick it up.
+- **EWMA / GARCH vol** and a **filtered-HS** variant for a more responsive tail.
