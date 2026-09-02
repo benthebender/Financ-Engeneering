@@ -1,12 +1,29 @@
 import pandas as pd
+import zipfile
+import io
+import openpyxl
 
 # ============================================================
 # ALL-KANNS LIFE INSURANCE
-# PENSION LIABILITY MODEL
+# COMPLETE PENSION LIABILITY MODEL
 # ============================================================
 
+
 # ============================================================
-# 1. CASE INPUTS
+# 1. FILE LOCATIONS
+# ============================================================
+
+MORTALITY_FILE = "germany_mortality.csv"
+
+EIOPA_ZIP_FILE = "EIOPA_RFR_20260731.zip"
+
+EIOPA_EXCEL_FILE = "EIOPA_RFR_20260731_Term_Structures.xlsx"
+
+EIOPA_SHEET = "RFR_spot_no_VA"
+
+
+# ============================================================
+# 2. CASE INPUTS
 # ============================================================
 
 N_MALE = 50_000
@@ -15,134 +32,197 @@ TOTAL_POLICYHOLDERS = N_MALE + N_FEMALE
 
 CURRENT_AGE = 50
 RETIREMENT_AGE = 65
+
+# Mortality model currently runs until age 100
 MAX_AGE = 100
 
-# Current accumulated amount per person
 INITIAL_CAPITAL_PER_PERSON = 50_000
 
-# Contribution paid at END of each year for 10 years
 ANNUAL_CONTRIBUTION = 5_000
+
 CONTRIBUTION_YEARS = 10
 
 # Professor's clarification:
-# Policyholders must receive at least 1% annual return
-# on contributed capital.
-GUARANTEED_RATE = 0.01
+# minimum 1% return on contributed capital
+GUARANTEED_ACCUMULATION_RATE = 0.01
 
 # Pension is paid for at least 10 years
-GUARANTEE_YEARS_PENSION = 10
-
-# ------------------------------------------------------------
-# IMPORTANT:
-#
-# This is NOT the guaranteed rate.
-#
-# This is the rate used to calculate the present value
-# of pension liabilities after age 65.
-#
-# For now you can change this for scenario analysis.
-# Later, replace this with an appropriate market/EIOPA
-# zero-coupon discount curve.
-# ------------------------------------------------------------
-
-VALUATION_RATE = 0.025
+PENSION_GUARANTEE_YEARS = 10
 
 
 # ============================================================
-# 2. CALCULATE GUARANTEED CAPITAL AT AGE 65
+# 3. PENSION CONVERSION ASSUMPTION
+# ============================================================
+#
+# IMPORTANT:
+#
+# The 1% guaranteed accumulation tells us how much guaranteed
+# capital the policyholder has accumulated by age 65.
+#
+# The case does not explicitly provide a pension conversion
+# rate.
+#
+# For now we use 1% as the actuarial conversion assumption.
+#
+# THIS RATE DETERMINES THE PENSION AMOUNT.
+#
+# It does NOT determine the market PV of the liability.
+#
+# Market PV is calculated separately using the EIOPA curve.
+# ============================================================
+
+PENSION_CONVERSION_RATE = 0.01
+
+
+# ============================================================
+# 4. CALCULATE GUARANTEED CAPITAL AT AGE 65
 # ============================================================
 
 YEARS_TO_RETIREMENT = (
     RETIREMENT_AGE - CURRENT_AGE
 )
 
+
 # ------------------------------------------------------------
-# Existing EUR 50,000 grows for 15 years at 1%
+# Existing EUR 50,000
+#
+# It grows for 15 years at the guaranteed 1%.
 # ------------------------------------------------------------
 
 FV_INITIAL_PER_PERSON = (
+
     INITIAL_CAPITAL_PER_PERSON
-    * (1 + GUARANTEED_RATE) ** YEARS_TO_RETIREMENT
+    *
+    (1 + GUARANTEED_ACCUMULATION_RATE)
+    ** YEARS_TO_RETIREMENT
+
 )
 
 
 # ------------------------------------------------------------
 # Future contributions
 #
-# Contributions are made at END of Years 1-10.
+# Contributions occur at the END of Years 1-10.
 #
 # Therefore:
 #
-# Contribution at end Year 1 grows for 14 years.
-# Contribution at end Year 2 grows for 13 years.
+# Year 1 contribution grows for 14 years
+# Year 2 contribution grows for 13 years
 # ...
-# Contribution at end Year 10 grows for 5 years.
+# Year 10 contribution grows for 5 years
 # ------------------------------------------------------------
 
 FV_CONTRIBUTIONS_PER_PERSON = 0
 
 contribution_details = []
 
-for year in range(1, CONTRIBUTION_YEARS + 1):
+
+for contribution_year in range(
+    1,
+    CONTRIBUTION_YEARS + 1
+):
 
     years_of_growth = (
-        YEARS_TO_RETIREMENT - year
+
+        YEARS_TO_RETIREMENT
+        -
+        contribution_year
+
     )
 
     future_value = (
+
         ANNUAL_CONTRIBUTION
-        * (1 + GUARANTEED_RATE) ** years_of_growth
+        *
+        (
+            1
+            +
+            GUARANTEED_ACCUMULATION_RATE
+        )
+        ** years_of_growth
+
     )
 
     FV_CONTRIBUTIONS_PER_PERSON += future_value
 
     contribution_details.append({
-        "Contribution_Year": year,
-        "Contribution": ANNUAL_CONTRIBUTION,
-        "Years_Growing_at_1pct": years_of_growth,
-        "Value_at_65": future_value
+
+        "Contribution_Year":
+            contribution_year,
+
+        "Contribution":
+            ANNUAL_CONTRIBUTION,
+
+        "Years_of_Growth":
+            years_of_growth,
+
+        "Value_at_Age_65":
+            future_value
+
     })
 
 
 # ------------------------------------------------------------
-# Total guaranteed capital per person at age 65
+# Guaranteed capital per person
 # ------------------------------------------------------------
 
 GUARANTEED_CAPITAL_PER_PERSON = (
+
     FV_INITIAL_PER_PERSON
-    + FV_CONTRIBUTIONS_PER_PERSON
+    +
+    FV_CONTRIBUTIONS_PER_PERSON
+
 )
 
 
 # ------------------------------------------------------------
-# Total guaranteed capital for all 100,000 people
+# Guaranteed capital for entire pool
 # ------------------------------------------------------------
 
 TOTAL_GUARANTEED_CAPITAL_AT_65 = (
+
     GUARANTEED_CAPITAL_PER_PERSON
-    * TOTAL_POLICYHOLDERS
+    *
+    TOTAL_POLICYHOLDERS
+
 )
 
 
 # ============================================================
-# 3. LOAD GERMAN MORTALITY DATA
+# 5. LOAD GERMAN MORTALITY DATA
 # ============================================================
 
 mortality_input = pd.read_csv(
-    "germany_mortality.csv"
+    MORTALITY_FILE
 )
 
+
 mortality_input = mortality_input[
-    (mortality_input["Age"] >= RETIREMENT_AGE)
+
+    (
+        mortality_input["Age"]
+        >= RETIREMENT_AGE
+    )
+
     &
-    (mortality_input["Age"] < MAX_AGE)
+
+    (
+        mortality_input["Age"]
+        < MAX_AGE
+    )
+
 ].copy()
 
 
-# Check for missing ages
+# ------------------------------------------------------------
+# Check missing ages
+# ------------------------------------------------------------
 
 required_ages = set(
-    range(RETIREMENT_AGE, MAX_AGE)
+    range(
+        RETIREMENT_AGE,
+        MAX_AGE
+    )
 )
 
 available_ages = set(
@@ -150,38 +230,54 @@ available_ages = set(
 )
 
 missing_ages = (
-    required_ages - available_ages
+    required_ages
+    -
+    available_ages
 )
+
 
 if missing_ages:
 
     raise ValueError(
+
         f"Missing mortality rates for ages: "
         f"{sorted(missing_ages)}"
+
     )
 
 
 # ============================================================
-# 4. CREATE MORTALITY DICTIONARIES
+# 6. CREATE MORTALITY DICTIONARIES
 # ============================================================
 
 male_qx = dict(
+
     zip(
+
         mortality_input["Age"],
+
         mortality_input["Male_qx"]
+
     )
+
 )
 
+
 female_qx = dict(
+
     zip(
+
         mortality_input["Age"],
+
         mortality_input["Female_qx"]
+
     )
+
 )
 
 
 # ============================================================
-# 5. SURVIVAL MODEL
+# 7. SURVIVAL FUNCTION
 # ============================================================
 
 def calculate_survival(
@@ -189,9 +285,12 @@ def calculate_survival(
     qx_by_age
 ):
 
-    alive = float(start_population)
+    alive = float(
+        start_population
+    )
 
     rows = []
+
 
     for age in range(
         RETIREMENT_AGE,
@@ -205,28 +304,45 @@ def calculate_survival(
         )
 
         alive_next_year = (
-            alive - expected_deaths
+            alive
+            -
+            expected_deaths
         )
+
 
         rows.append({
 
-            "Age": age,
+            "Age":
+                age,
 
-            "Alive_Start": alive,
+            "Alive_Start":
+                alive,
 
-            "qx": qx,
+            "qx":
+                qx,
 
             "Expected_Deaths":
                 expected_deaths,
 
             "Alive_Next":
                 alive_next_year
+
         })
 
-        alive = alive_next_year
 
-    return pd.DataFrame(rows)
+        alive = (
+            alive_next_year
+        )
 
+
+    return pd.DataFrame(
+        rows
+    )
+
+
+# ============================================================
+# 8. CALCULATE MALE/FEMALE SURVIVAL
+# ============================================================
 
 male = calculate_survival(
     N_MALE,
@@ -240,18 +356,33 @@ female = calculate_survival(
 
 
 # ============================================================
-# 6. COMBINE MALE AND FEMALE POPULATIONS
+# 9. BUILD PENSION MODEL
 # ============================================================
 
 model = pd.DataFrame()
 
-model["Age"] = male["Age"]
 
-model["Year"] = (
-    model["Age"]
-    - RETIREMENT_AGE
-    + 1
+model["Age"] = (
+    male["Age"]
 )
+
+
+# ------------------------------------------------------------
+# Pension year
+#
+# Year 1 = first year after retirement
+# ------------------------------------------------------------
+
+model["Pension_Year"] = (
+
+    model["Age"]
+    -
+    RETIREMENT_AGE
+    +
+    1
+
+)
+
 
 model["Male_Alive"] = (
     male["Alive_Start"]
@@ -261,6 +392,7 @@ model["Female_Alive"] = (
     female["Alive_Start"]
 )
 
+
 model["Male_Deaths"] = (
     male["Expected_Deaths"]
 )
@@ -269,103 +401,120 @@ model["Female_Deaths"] = (
     female["Expected_Deaths"]
 )
 
+
 model["Total_Alive"] = (
+
     model["Male_Alive"]
-    + model["Female_Alive"]
+    +
+    model["Female_Alive"]
+
 )
+
 
 model["Total_Deaths"] = (
+
     model["Male_Deaths"]
-    + model["Female_Deaths"]
+    +
+    model["Female_Deaths"]
+
 )
 
 
 # ============================================================
-# 7. NUMBER OF PENSIONS PAID EACH YEAR
+# 10. NUMBER OF PENSION PAYMENTS
 # ============================================================
-#
-# Case says:
-#
-# Pension is paid for AT LEAST 10 years.
 #
 # ASSUMPTION:
 #
-# If somebody dies during the first 10 years,
-# guaranteed payments continue to beneficiary/estate.
+# First 10 pension years are guaranteed.
 #
-# Therefore Years 1-10:
+# Therefore:
 #
-#       100,000 pension payments
+# Pension Years 1-10:
+# 100,000 pension payments.
 #
 # After Year 10:
-#
-#       only surviving pensioners receive payments.
+# only surviving pensioners receive payments.
 # ============================================================
 
-def pension_units(row):
+def calculate_pension_units(row):
 
     if (
-        row["Year"]
-        <= GUARANTEE_YEARS_PENSION
+        row["Pension_Year"]
+        <=
+        PENSION_GUARANTEE_YEARS
     ):
 
-        return TOTAL_POLICYHOLDERS
+        return (
+            TOTAL_POLICYHOLDERS
+        )
 
     else:
 
-        return row["Total_Alive"]
+        return (
+            row["Total_Alive"]
+        )
 
 
 model["Pension_Units"] = (
+
     model.apply(
-        pension_units,
+        calculate_pension_units,
         axis=1
     )
+
 )
 
 
 # ============================================================
-# 8. CALCULATE ANNUAL PENSION
+# 11. CALCULATE LEVEL PENSION AT AGE 65
 # ============================================================
 #
-# We now need to convert the guaranteed capital at 65
-# into a lifetime annual pension.
+# We need an annual pension amount.
 #
-# For this calculation we use the valuation rate.
+# For now:
 #
-# PV(expected pension payments)
+# PV at age 65 of expected pension payments
+# using the 1% conversion assumption
+#
 # =
-# guaranteed capital available at age 65
 #
+# guaranteed accumulated capital at age 65.
 # ============================================================
 
-model["Discount_Factor"] = (
+model["Conversion_Discount_Factor"] = (
 
     1
     /
-    (1 + VALUATION_RATE)
-    ** model["Year"]
+    (
+        1
+        +
+        PENSION_CONVERSION_RATE
+    )
+    ** model["Pension_Year"]
 
 )
 
 
-# PV at age 65 of EUR 1 pension per pension unit
-
-model["PV_One_Euro"] = (
+model["PV_1EUR_Pension_at_65"] = (
 
     model["Pension_Units"]
     *
-    model["Discount_Factor"]
+    model[
+        "Conversion_Discount_Factor"
+    ]
 
 )
 
 
 POOL_ANNUITY_FACTOR = (
-    model["PV_One_Euro"].sum()
+
+    model[
+        "PV_1EUR_Pension_at_65"
+    ].sum()
+
 )
 
-
-# Annual pension per person
 
 ANNUAL_PENSION_PER_PERSON = (
 
@@ -379,16 +528,19 @@ ANNUAL_PENSION_PER_PERSON = (
 MONTHLY_PENSION_PER_PERSON = (
 
     ANNUAL_PENSION_PER_PERSON
-    / 12
+    /
+    12
 
 )
 
 
 # ============================================================
-# 9. EXPECTED PENSION CASH FLOWS
+# 12. EXPECTED PENSION CASH FLOWS
 # ============================================================
 
-model["Expected_Annual_Pension_Cashflow"] = (
+model[
+    "Expected_Annual_Pension_Cashflow"
+] = (
 
     model["Pension_Units"]
     *
@@ -398,40 +550,274 @@ model["Expected_Annual_Pension_Cashflow"] = (
 
 
 # ============================================================
-# 10. PRESENT VALUE OF EACH YEAR'S PENSION PAYMENTS
+# 13. READ EIOPA RISK-FREE CURVE DIRECTLY FROM ZIP
 # ============================================================
 
-model["PV_Pension_Cashflow"] = (
+with zipfile.ZipFile(
+    EIOPA_ZIP_FILE,
+    "r"
+) as z:
 
-    model[
-        "Expected_Annual_Pension_Cashflow"
-    ]
-    *
-    model["Discount_Factor"]
+    excel_bytes = z.read(
+        EIOPA_EXCEL_FILE
+    )
+
+
+workbook = openpyxl.load_workbook(
+
+    io.BytesIO(
+        excel_bytes
+    ),
+
+    data_only=True
+
+)
+
+
+sheet = workbook[
+    EIOPA_SHEET
+]
+
+
+# ============================================================
+# 14. EXTRACT EURO SPOT CURVE
+# ============================================================
+#
+# In the EIOPA file:
+#
+# Column B = maturity
+# Column C = Euro spot rate
+#
+# Data begins at row 11.
+# ============================================================
+
+eiopa_curve = {}
+
+
+row = 11
+
+
+while True:
+
+    maturity = (
+        sheet.cell(
+            row=row,
+            column=2
+        ).value
+    )
+
+    euro_rate = (
+        sheet.cell(
+            row=row,
+            column=3
+        ).value
+    )
+
+
+    if maturity is None:
+
+        break
+
+
+    if euro_rate is not None:
+
+        eiopa_curve[
+            int(maturity)
+        ] = float(
+            euro_rate
+        )
+
+
+    row += 1
+
+
+# ============================================================
+# 15. DISPLAY EIOPA CURVE INFORMATION
+# ============================================================
+
+EIOPA_LLP = (
+    sheet["C5"].value
+)
+
+EIOPA_CONVERGENCE = (
+    sheet["C6"].value
+)
+
+EIOPA_UFR = (
+    sheet["C7"].value
+)
+
+
+# ============================================================
+# 16. MAP PENSION CASH FLOWS TO TODAY
+# ============================================================
+#
+# VERY IMPORTANT:
+#
+# Policyholders are 50 today.
+#
+# Pension begins at age 65.
+#
+# Therefore pension payments are NOT Year 1 from today.
+#
+# They begin roughly 15 years from now.
+#
+# Since we model the first annual payment at the END of the
+# first pension year:
+#
+# Pension Year 1 = Year 16 from today
+#
+# Pension Year 2 = Year 17 from today
+#
+# etc.
+#
+# If you instead want the first payment exactly at age 65,
+# change the line below to:
+#
+# model["Years_From_Today"] = 15 + model["Pension_Year"] - 1
+#
+# ============================================================
+
+model["Years_From_Today"] = (
+
+    YEARS_TO_RETIREMENT
+    +
+    model["Pension_Year"]
 
 )
 
 
 # ============================================================
-# 11. TOTAL PRESENT VALUE OF ALL PENSION PAYMENTS
+# 17. GET EIOPA RATE FOR EACH LIABILITY CASH FLOW
 # ============================================================
 
-PV_ALL_PENSION_PAYMENTS = (
+def get_eiopa_rate(year):
+
+    year = int(year)
+
+    if year not in eiopa_curve:
+
+        raise ValueError(
+
+            f"EIOPA curve does not contain "
+            f"a rate for maturity {year} years."
+
+        )
+
+    return (
+        eiopa_curve[year]
+    )
+
+
+model["EIOPA_Spot_Rate"] = (
 
     model[
-        "PV_Pension_Cashflow"
+        "Years_From_Today"
+    ].apply(
+        get_eiopa_rate
+    )
+
+)
+
+
+# ============================================================
+# 18. CALCULATE EIOPA DISCOUNT FACTORS
+# ============================================================
+#
+# EIOPA file gives annual spot rates.
+#
+# Discount factor:
+#
+# DF(t) = 1 / (1 + r_t)^t
+# ============================================================
+
+model["EIOPA_Discount_Factor"] = (
+
+    1
+    /
+    (
+        1
+        +
+        model["EIOPA_Spot_Rate"]
+    )
+    **
+    model["Years_From_Today"]
+
+)
+
+
+# ============================================================
+# 19. CALCULATE PV TODAY OF EACH PENSION CASH FLOW
+# ============================================================
+
+model[
+    "PV_Today_EIOPA"
+] = (
+
+    model[
+        "Expected_Annual_Pension_Cashflow"
+    ]
+
+    *
+
+    model[
+        "EIOPA_Discount_Factor"
+    ]
+
+)
+
+
+# ============================================================
+# 20. TOTAL PV TODAY OF PENSION LIABILITY
+# ============================================================
+
+PV_PENSION_LIABILITY_TODAY = (
+
+    model[
+        "PV_Today_EIOPA"
     ].sum()
 
 )
 
 
 # ============================================================
-# 12. TOTAL NOMINAL EXPECTED PAYMENTS
+# 21. PV OF PENSION LIABILITY AT AGE 65
 # ============================================================
 #
-# This tells us how many euros the insurer expects
-# to physically pay over the entire pension period,
-# without discounting.
+# This is based on our pension conversion assumption.
+#
+# It should equal the guaranteed accumulated capital at 65
+# because that is how we solved for the pension.
+# ============================================================
+
+model[
+    "PV_at_65_Conversion_Rate"
+] = (
+
+    model[
+        "Expected_Annual_Pension_Cashflow"
+    ]
+
+    *
+
+    model[
+        "Conversion_Discount_Factor"
+    ]
+
+)
+
+
+PV_PENSION_AT_65 = (
+
+    model[
+        "PV_at_65_Conversion_Rate"
+    ].sum()
+
+)
+
+
+# ============================================================
+# 22. TOTAL NOMINAL EXPECTED PAYMENTS
 # ============================================================
 
 TOTAL_NOMINAL_PENSION_PAYMENTS = (
@@ -444,22 +830,36 @@ TOTAL_NOMINAL_PENSION_PAYMENTS = (
 
 
 # ============================================================
-# 13. PRINT ACCUMULATION RESULTS
+# 23. PRINT RESULTS
 # ============================================================
 
-print("\n" + "=" * 70)
+print(
+    "\n"
+    +
+    "=" * 75
+)
 
 print(
     "ALL-KANNS LIFE INSURANCE - "
-    "PENSION LIABILITY MODEL"
+    "EIOPA PENSION LIABILITY MODEL"
 )
 
-print("=" * 70)
+print(
+    "=" * 75
+)
 
 
-print("\nACCUMULATION PHASE")
+# ------------------------------------------------------------
+# Accumulation
+# ------------------------------------------------------------
 
-print("-" * 70)
+print(
+    "\nACCUMULATION TO AGE 65"
+)
+
+print(
+    "-" * 75
+)
 
 
 print(
@@ -469,58 +869,56 @@ print(
 
 
 print(
-    f"Guaranteed annual return: "
-    f"{GUARANTEED_RATE * 100:.2f}%"
+    f"Guaranteed return: "
+    f"{GUARANTEED_ACCUMULATION_RATE * 100:.2f}%"
 )
 
 
 print(
-    f"Value of initial EUR 50,000 "
-    f"at age 65: "
+    f"FV of initial EUR 50,000 at age 65: "
     f"EUR {FV_INITIAL_PER_PERSON:,.2f}"
 )
 
 
 print(
-    f"Value at 65 of ten "
-    f"EUR 5,000 contributions: "
+    f"FV of future contributions at age 65: "
     f"EUR {FV_CONTRIBUTIONS_PER_PERSON:,.2f}"
 )
 
 
 print(
-    f"\nGuaranteed capital per person "
-    f"at age 65: "
+    f"\nGuaranteed capital per person at 65: "
     f"EUR {GUARANTEED_CAPITAL_PER_PERSON:,.2f}"
 )
 
 
 print(
-    f"Total guaranteed capital "
-    f"at age 65: "
+    f"Total guaranteed capital at 65: "
     f"EUR {TOTAL_GUARANTEED_CAPITAL_AT_65:,.2f}"
 )
 
 
-# ============================================================
-# 14. PRINT PENSION RESULTS
-# ============================================================
-
-print("\n" + "-" * 70)
-
-print("PENSION PHASE")
-
-print("-" * 70)
-
+# ------------------------------------------------------------
+# Pension
+# ------------------------------------------------------------
 
 print(
-    f"Valuation rate used after age 65: "
-    f"{VALUATION_RATE * 100:.2f}%"
+    "\nPENSION"
+)
+
+print(
+    "-" * 75
 )
 
 
 print(
-    f"\nAnnual pension per person: "
+    f"Pension conversion rate assumption: "
+    f"{PENSION_CONVERSION_RATE * 100:.2f}%"
+)
+
+
+print(
+    f"Annual pension per person: "
     f"EUR {ANNUAL_PENSION_PER_PERSON:,.2f}"
 )
 
@@ -532,58 +930,98 @@ print(
 
 
 print(
-    f"\nPV at age 65 of all expected "
-    f"pension payments: "
-    f"EUR {PV_ALL_PENSION_PAYMENTS:,.2f}"
-)
-
-
-print(
-    f"Total expected nominal pension "
-    f"payments over lifetime: "
+    f"Total expected nominal lifetime payments: "
     f"EUR {TOTAL_NOMINAL_PENSION_PAYMENTS:,.2f}"
 )
 
 
-# ============================================================
-# 15. CHECK
-# ============================================================
-
-print("\n" + "-" * 70)
-
-print("MODEL CHECK")
-
-print("-" * 70)
-
+# ------------------------------------------------------------
+# EIOPA
+# ------------------------------------------------------------
 
 print(
-    f"Guaranteed capital at age 65: "
-    f"EUR {TOTAL_GUARANTEED_CAPITAL_AT_65:,.2f}"
+    "\nEIOPA CURVE"
+)
+
+print(
+    "-" * 75
 )
 
 
 print(
-    f"PV of pension payments: "
-    f"EUR {PV_ALL_PENSION_PAYMENTS:,.2f}"
+    "Curve: EUR RFR spot without VA"
 )
 
 
 print(
-    f"Difference: "
-    f"EUR "
-    f"{PV_ALL_PENSION_PAYMENTS - TOTAL_GUARANTEED_CAPITAL_AT_65:,.2f}"
+    f"LLP: {EIOPA_LLP} years"
+)
+
+
+print(
+    f"Convergence: {EIOPA_CONVERGENCE} years"
+)
+
+
+print(
+    f"UFR: {EIOPA_UFR:.2f}%"
+)
+
+
+print(
+    f"First EIOPA rate used: "
+    f"{model.iloc[0]['EIOPA_Spot_Rate'] * 100:.4f}%"
+)
+
+
+print(
+    f"First liability maturity from today: "
+    f"{int(model.iloc[0]['Years_From_Today'])} years"
+)
+
+
+# ------------------------------------------------------------
+# Liability valuation
+# ------------------------------------------------------------
+
+print(
+    "\nLIABILITY VALUATION"
+)
+
+print(
+    "-" * 75
+)
+
+
+print(
+    f"PV at age 65 under pension conversion assumption: "
+    f"EUR {PV_PENSION_AT_65:,.2f}"
+)
+
+
+print(
+    f"PV TODAY using EIOPA EUR spot curve: "
+    f"EUR {PV_PENSION_LIABILITY_TODAY:,.2f}"
+)
+
+
+print(
+    f"\nCurrent assets: "
+    f"EUR {INITIAL_CAPITAL_PER_PERSON * TOTAL_POLICYHOLDERS:,.2f}"
 )
 
 
 # ============================================================
-# 16. PRINT CASH FLOW TABLE
+# 24. PRINT CASH-FLOW TABLE
 # ============================================================
 
 output_columns = [
 
-    "Year",
+    "Pension_Year",
 
     "Age",
+
+    "Years_From_Today",
 
     "Male_Alive",
 
@@ -597,42 +1035,74 @@ output_columns = [
 
     "Expected_Annual_Pension_Cashflow",
 
-    "Discount_Factor",
+    "EIOPA_Spot_Rate",
 
-    "PV_Pension_Cashflow"
+    "EIOPA_Discount_Factor",
+
+    "PV_Today_EIOPA"
 
 ]
 
 
-print("\n" + "=" * 70)
-
 print(
-    "EXPECTED PENSION LIABILITY CASH FLOWS"
+    "\n"
+    +
+    "=" * 75
 )
 
-print("=" * 70 + "\n")
+print(
+    "EXPECTED PENSION CASH FLOWS AND EIOPA PRESENT VALUES"
+)
+
+print(
+    "=" * 75
+    +
+    "\n"
+)
+
+
+display_model = (
+    model[output_columns].copy()
+)
+
+
+# Convert EIOPA rate to percentage for easier reading
+
+display_model[
+    "EIOPA_Spot_Rate"
+] = (
+
+    display_model[
+        "EIOPA_Spot_Rate"
+    ]
+    *
+    100
+
+)
 
 
 print(
 
-    model[output_columns]
+    display_model
 
-    .round(2)
+    .round(4)
 
-    .to_string(index=False)
+    .to_string(
+        index=False
+    )
 
 )
 
 
 # ============================================================
-# 17. EXPORT RESULTS TO EXCEL
+# 25. EXPORT TO EXCEL
 # ============================================================
 
 model[
     output_columns
 ].to_excel(
 
-    "pension_liability_results.xlsx",
+    "pension_liability_EIOPA.xlsx",
 
     index=False
 
@@ -650,14 +1120,44 @@ pd.DataFrame(
 )
 
 
+# Export EIOPA curve as well
+
+eiopa_export = pd.DataFrame({
+
+    "Maturity":
+        list(
+            eiopa_curve.keys()
+        ),
+
+    "EUR_Spot_Rate":
+        list(
+            eiopa_curve.values()
+        )
+
+})
+
+
+eiopa_export.to_excel(
+
+    "EIOPA_EUR_curve.xlsx",
+
+    index=False
+
+)
+
+
 print(
-    "\nResults saved to:"
+    "\nFiles created:"
 )
 
 print(
-    "pension_liability_results.xlsx"
+    "1. pension_liability_EIOPA.xlsx"
 )
 
 print(
-    "contribution_accumulation.xlsx"
+    "2. contribution_accumulation.xlsx"
+)
+
+print(
+    "3. EIOPA_EUR_curve.xlsx"
 )
