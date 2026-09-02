@@ -504,15 +504,37 @@ def target_hedge_ratio(var_unhedged: float, var_limit: float) -> float:
     return float(min(1.0, max(0.0, 1.0 - var_limit / var_unhedged)))
 
 
+def vix_gated_band(base_buffer: float, vix: "float | None",
+                   calm: float = 20.0, spike: float = 40.0,
+                   min_frac: float = 0.2) -> float:
+    """No-trade band width as a function of VIX (rule 9 + VIX gating).
+
+    Wide band (few trades) in a calm regime; the band shrinks linearly from
+    `calm` to `spike` and floors at `min_frac * base_buffer` once VIX >= spike,
+    so the overlay reacts fast when volatility (and thus the measured 99% equity
+    VaR) jumps. VIX is the Heston VIX_t of the current regime (or the last
+    observed close once real VIX data is wired in)."""
+    if vix is None:
+        return base_buffer
+    frac = np.clip(1.0 - (vix - calm) / (spike - calm), min_frac, 1.0)
+    return base_buffer * float(frac)
+
+
 def applied_hedge_ratio(var_unhedged: float, var_limit: float,
-                        current_ratio: float, buffer: float) -> tuple[float, str]:
-    """Add the no-trade band (rule 9): only move the hedge if VaR is outside
-    +/- `buffer` of the limit; otherwise hold the current ratio."""
+                        current_ratio: float, buffer: float,
+                        vix: "float | None" = None) -> tuple[float, str]:
+    """No-trade band (rule 9): only move the hedge if VaR is outside +/- `buffer`
+    of the limit; otherwise hold the current ratio. If `vix` is given the band
+    is tightened when volatility spikes (`vix_gated_band`)."""
+    band = vix_gated_band(buffer, vix)
     tgt = target_hedge_ratio(var_unhedged, var_limit)
-    lo, hi = var_limit * (1 - buffer), var_limit * (1 + buffer)
+    lo, hi = var_limit * (1 - band), var_limit * (1 + band)
     if lo <= var_unhedged <= hi:
-        return current_ratio, f"within +/-{buffer:.0%} band - hold {current_ratio:.0%}"
-    return tgt, f"outside band - move to {tgt:.0%}"
+        return current_ratio, (f"within +/-{band:.0%} band"
+                               + (f" (VIX {vix:.0f})" if vix else "")
+                               + f" - hold {current_ratio:.0%}")
+    return tgt, (f"outside +/-{band:.0%} band"
+                 + (f" (VIX {vix:.0f})" if vix else "") + f" - move to {tgt:.0%}")
 
 
 def stress_tests(book: Book) -> pd.DataFrame:
