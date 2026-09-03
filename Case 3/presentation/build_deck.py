@@ -268,7 +268,7 @@ banner(s, "The mandate at a glance")
 stat_tiles(s, 2.0, [
     ("The ask", "€5.0bn → ~€10bn", "100,000-policyholder book, contributions €0.5bn/yr for 10y, 15-year horizon"),
     ("The approach", "2 sleeves", "Liability-matching bond book + surplus-funded return portfolio, split re-struck yearly"),
-    ("The result", "~6.0% p.a.", "Median 15-year IRR; even the 5th-pct path (2.9%) clears the 1.0% guarantee"),
+    ("The result", "~5.9% p.a.", "Median 15-year IRR (money-weighted); median funded ratio 205% at year 15"),
     ("The risk", "€0.85bn", "1-year 99% surplus VaR after the receiver-IRS overlay (€1.21bn before)"),
 ], big_fs=17)
 box(s, 0.44, 4.30, 12.5, 1.15, fill=DTEAL)
@@ -515,7 +515,7 @@ section_divider(4, "Product Strategy",
                 "Two sleeves: a matched bond floor, a surplus-funded return engine")
 # ---- Where you are / how / where to be ---------------------------------- #
 s = content("Securing Long-Term Returns Above the 1.0% Guarantee",
-            "A two-sleeve strategy; model median 15-year IRR ≈ 6.0%", 3)
+            "A two-sleeve strategy; consistent-pipeline MC median 15-year IRR ≈ 5.9%", 3)
 banner(s, "From here to there")
 panel(s, 0.44, 2.0, 4.05, 4.35, "Where you are", [
     "100,000 insured aged 50, 50/50 male/female.",
@@ -762,16 +762,30 @@ note(s, "Surplus P&L = ΔAssets − ΔLiability.  Source: results_var/HS_REPORT_
 # ---- Stress + MC --------------------------------------------------------- #
 s = content("Stress Testing and 15-Year Monte-Carlo",
             "Deterministic scenarios on the surplus, and the full distribution at year 15", 4)
-banner(s, "Deterministic stress – surplus P&L")
+banner(s, "Deterministic stress + 15-year Monte-Carlo (consistent pipeline)")
 image(s, "stress.png", 0.44, 1.86, 6.4)
-image(s, "mc_year15.png", 7.05, 1.86, 5.9)
+image(s, "lc_01_asset_evolution.png", 7.05, 1.82, 5.95)
 stat_tiles(s, 5.45, [
-    ("Median assets, yr 15", "€20.7bn", "15-year MC"),
-    ("5th percentile", "€14.3bn", "well above the floor"),
-    ("0.5th percentile", "€11.2bn", "≈ the €11.3bn floor"),
-    ("P(underfunded)", "< 0.6%", "before the glidepath"),
+    ("Median assets, yr 15", "€20.5bn", "median funded ratio 205%"),
+    ("5th percentile", "€11.3bn", "still above the €10.0bn liability"),
+    ("0.5th percentile", "€7.1bn", "the genuine tail – below the floor"),
+    ("P(underfunded), 50/50", "≈ 2.5%", "15y horizon, before the glidepath"),
 ], x0=0.44, total_w=12.5, h=1.3)
-note(s, "Sources: results_var/stress_tests_full_*.csv; monte_carlo_ALM_results.xlsx; 15Y median IRR ≈ 6.0%.", y=6.88, size=8)
+note(s, "Sources: results_var/stress_tests_full_*.csv; mc_lifecycle.py (50k paths, annual Student-t df 5, the actual funding waterfall). 15Y median IRR ≈ 5.9%.", y=6.88, size=8)
+
+# ---- 15-year MC distributions ----------------------------------------- #
+s = content("15-Year Monte-Carlo – Does It Reach the Destination?",
+            "Consistent pipeline: the real funding waterfall, Student-t returns, 50,000 paths", 4)
+banner(s, "Year-15 outcome distributions")
+image(s, "lc_05_funding_ratio_distribution.png", 0.44, 1.9, 6.2)
+image(s, "lc_03_15year_IRR_distribution.png", 6.9, 1.9, 6.2)
+stat_tiles(s, 5.5, [
+    ("Median funded ratio", "205%", "assets / 50-50 year-15 liability"),
+    ("Median 15y IRR", "5.9%", "5th pct 1.0%, 0.5th pct −2.8%"),
+    ("P(underfunded), 50/50", "≈ 2.5%", "rises to ≈ 5% at a 100% lump election"),
+    ("Mean annual return", "6.3%", "contribution-stripped"),
+], x0=0.44, total_w=12.5, h=1.25)
+note(s, "The tail is fatter than an assumed 70/30 blend: the waterfall loads the volatile RSP far more heavily by year 15. Source: mc_lifecycle.py / results_var/MC_LIFECYCLE_REPORT.md.", y=6.9, size=8)
 
 # ======================================================================== #
 section_divider(6, "What Happens With the Upside",
@@ -806,14 +820,14 @@ kv_table(s, 0.44, 2.0, 12.5, [
 ], header=("Election", "Lump-sum at yr 15", "Pensioners", "Pension PV at yr 15", "Total PV today"),
     col1=0.24, rh=0.46, fs=9.5)
 panel(s, 0.44, 4.9, 6.05, 1.6, "Market path on top", [
-    "Base 15y median assets €20.7bn vs a €10.0bn liability → funded ratio ≈ 2.1×.",
-    "Even the 0.5th-percentile path (€11.2bn) covers the €11.3bn floor.",
+    "Base 15y median assets €20.5bn vs a €10.0bn liability → median funded ratio ≈ 2.05×.",
+    "5th-pct path €11.3bn still covers it; the 0.5th-pct path (€7.1bn) does not.",
 ], size=9.5)
-panel(s, 6.72, 4.9, 6.22, 1.6, "So the upside is real", [
-    "Across every election and almost every market path the book finishes above the guarantee.",
-    "P(underfunded) ≈ 0.1% at the base election, still < 0.6% even at a 100% lump election – before the de-risking glidepath.",
-], size=9.5)
-note(s, "Source: mixed_liability_scenarios.xlsx (Scenario Summary); monte_carlo_ALM_results.xlsx (Scenario EUR bn).")
+panel(s, 6.72, 4.9, 6.22, 1.6, "So the upside is real – with a real tail", [
+    "≈ 97.5% of paths finish funded at the base election (P(underfunded) ≈ 2.5%), ≈ 95% at a 100% lump election.",
+    "The deep tail is the RSP's – the €5bn LMP still backs the guaranteed cash flows; the years 11–15 glidepath de-risks it further.",
+], size=9.3)
+note(s, "Source: mixed_liability_scenarios.xlsx (Scenario Summary); mc_lifecycle.py (50k paths, consistent funding waterfall).")
 
 # ---- 6c  Profit share ------------------------------------------------- #
 s = content("Sharing the Upside – 90 / 10 From Year 15",
@@ -842,8 +856,8 @@ panel(s, 0.44, 1.95, 6.25, 4.55, "What we propose", [
     ("Glidepath years 11–15  ", "de-risk into the year-15 payout; hold ≥ 1.1× the next 12m of outflows in cash + sovereigns."),
 ], size=9.4)
 panel(s, 6.85, 1.95, 6.09, 4.55, "Why it wins the mandate", [
-    ("Floor is safe.  ", "€11.3bn guarantee covered even on the 0.5th-percentile 15-year path; P(underfunded) < 0.6%."),
-    ("Upside is real.  ", "median 15-year IRR ≈ 6.0% – ≈ 500bps above the 1.0% guarantee; 90% shared with policyholders."),
+    ("Floor is backed.  ", "the €5bn cash-flow-dedicated LMP funds the guaranteed benefits directly; ≈ 97.5% of 15-year MC paths finish funded at the base election (P(underfunded) ≈ 2.5%), the glidepath cuts the tail further."),
+    ("Upside is real.  ", "median 15-year IRR ≈ 5.9% – ≈ 490bps above the 1.0% guarantee; 90% shared with policyholders from year 15."),
     ("Risk is controlled.  ", "1-year 99% surplus VaR €0.85bn after the overlay (−30%); every stress inside the €3.2bn surplus."),
     ("IAS-defensible.  ", "duration + KRD matched, so LMP mark-to-market offsets the liability; low turnover."),
     ("Fully compliant.  ", "Solvency II capital and BaFin AnlV limits built into construction and reporting."),
