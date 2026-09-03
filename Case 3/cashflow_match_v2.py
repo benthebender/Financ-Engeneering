@@ -6,38 +6,45 @@ PROTOTYPE - a two-stage (lexicographic) Fixed-Income optimiser for Case 3b.
 `alm_fixed_income_.py` stays untouched; this is meant to be diffed against it.
 
 Stage 1  - cash-flow dedication
-    min   bond cost  +  PEN * PV(external top-up)
-    s.t.  running cash balance >= 0 for every liability year
-          (surplus reinvested at `reinvest_rate`; a slack variable = the cash
-           the return book / future premiums must supply where the bond
-           universe physically cannot reach - the 30y+ tail)
+    min   PV(external top-up)
+    s.t.  running cash balance >= 0 for every liability year 1..H
+          (surplus reinvested at `reinvest_rate`; slack_t = the cash the return
+           book / future premiums must supply where the bond universe cannot
+           reach; redemptions past H simply do not enter the balance)
           budget <= 5.0bn ; single-instrument cap ; single-issuer cap
 
-Stage 2  - duration / key-rate shaping  (the "secondary condition")
-    min   Sum_j w_j ( KRD_asset(x, j) - KRD_liab(j) )^2
+Stage 2  - key-rate shaping  (the "secondary condition")
+    min   Sum_j w_j ( KRD_asset(x, j) - KRD_liab(j) )^2  +  overshoot penalty
     s.t.  every Stage-1 constraint
-          bond cost <= cost_1 * (1 + eps)        (eps = how much extra cost we
-                                                  allow the duration match to use)
-          external top-up <= top-up_1            (don't worsen coverage)
+          top-up PV <= top-up_1 * (1 + eps)     (coverage no more than eps worse)
+          Sum_j KRD_asset(j) >= Stage-1 total DV01   (do not give back duration)
+    w_j proportional to the liability's own KRD, so a harmless over-hedge in a
+    near-empty long bucket does not drag the ultra-longs back out.
 
-So: fix the cash flows first, then spend whatever of the first 5bn is not
-needed for the fix on the longest-duration bonds that best match the liability
-key-rate profile.
+KRD = real key-rate DV01: a triangular 1bp bump of the *zero* curve at each key
+tenor, cash flows repriced (`krd01` / `_tent`).  Key tenors run to 90y so the
+2076-2120 ZCBs load buckets the liability barely occupies.
 
 Convexity is fought two ways:
   * KRD buckets (not just total DV01) force the *dispersion* of the asset cash
-    flows to track the liability -> a first-order convexity match.
-  * zero-coupon / STRIP bonds in the universe (coupon == 0) carry their whole
-    weight at one long maturity -> higher convexity per year of duration and
-    no reinvestment drag; the optimiser will lean on them for the tail.
+    flows onto the liability -> a first-order convexity + curve-twist match.
+  * zero-coupon bonds carry their whole weight at one long maturity -> higher
+    convexity per year of duration and no reinvestment drag.
 
-Outputs -> results_v2/ : portfolio_v2.csv (schema-compatible with
-results/fixed_income_portfolio.csv), krd_compare.csv, cfmatch_v2.png, REPORT.md
+Universe: `Fixed Income Basket.xlsx` + `ZCB and ultra long coupon Bond.xlsx`
+(both read by the tolerant `parse_basket_5col`).  `alm_fixed_income_.py` is
+imported for the swap curve only and is left untouched.
+
+Outputs -> results_v2/ : portfolio_base.csv / portfolio_wide.csv,
+krd_base.csv / krd_wide.csv, cfmatch_v2.png, REPORT.md
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+
+import re
+from datetime import date
 
 import cvxpy as cp
 import numpy as np
@@ -50,80 +57,174 @@ HERE = Path(__file__).resolve().parent
 OUT = HERE / "results_v2"
 BN = 1e9
 BUDGET = 5.0            # EUR bn - the optimiser works in bn for conditioning
-KEY_TENORS = np.array([2, 5, 10, 15, 20, 25, 30, 40], dtype=float)
+VAL_DATE = date(2026, 9, 2)
+PRICE_HORIZON = 100    # long enough for the ultra-long / century bonds
+# key tenors for the KRD match - out to 90y so the century / 2076-2120 ZCBs
+# load buckets the liability barely occupies (weighted ~0) instead of swamping a
+# single flat 50y bucket
+KEY_TENORS = np.array([2, 5, 10, 15, 20, 25, 30, 40, 50, 65, 90], dtype=float)
+
+# extra Bloomberg-ticker -> issuer names for the new ZCB / ultra-long workbook
+_ISSUER = {
+    "EIB": "European Investment Bank", "IBRD": "World Bank (IBRD)",
+    "AFDB": "African Development Bank", "AUST": "Republic of Austria",
+    "NRW": "North Rhine-Westphalia", "SLOVGB": "Slovak Republic",
+    "KFW": "KfW", "RENTEN": "Rentenbank",
+}
 
 
 # --------------------------------------------------------------------------- #
-def load_inputs() -> "tuple[pd.DataFrame, pd.DataFrame, pd.Series]":
+def parse_basket_5col(path: Path) -> pd.DataFrame:
+    """Tolerant reader for the 5-column-block Bloomberg workbooks
+    ([weekday, date, price/1000, coupon, maturity-year]).  Takes the maturity
+    from the instrument name (M/D/Y), ignores a wrong metadata year, dedupes,
+    and does NOT crash on a bad block - used for both the Fixed Income Basket
+    and the new ZCB / ultra-long workbook."""
+    sheet = pd.read_excel(path, header=None, engine="openpyxl")
+    rows = []
+    for c0 in range(0, sheet.shape[1], 5):
+        if c0 + 4 >= sheet.shape[1]:
+            break
+        raw_name = sheet.iat[0, c0 + 2]
+        if pd.isna(raw_name):
+            continue
+        name = str(raw_name).replace("\xa0", " ").strip()
+        mm = re.search(r"(\d{1,2})/(\d{1,2})/(\d{2,4})", name)
+        if not mm:
+            continue
+        a, b, y = (int(v) for v in mm.groups())
+        y += 2000 if y < 100 else 0
+        try:
+            mat = date(y, a, b)
+        except ValueError:
+            continue
+        try:
+            coupon = float(sheet.iat[0, c0 + 3])
+        except (TypeError, ValueError):
+            coupon = 0.0
+        price = None
+        for r in range(1, len(sheet)):
+            rp, dt = sheet.iat[r, c0 + 2], sheet.iat[r, c0 + 1]
+            if pd.isna(rp) or pd.isna(dt):
+                continue
+            p = float(rp) / 1_000.0
+            if 1.0 < p < 200.0:
+                price = p
+                break
+        if price is None:
+            continue
+        prefix = name.upper().split()[0]
+        issuer = _ISSUER.get(prefix, alm.infer_issuer_and_category(name)[0])
+        rows.append(dict(instrument=name, issuer=issuer, coupon=coupon,
+                         maturity_date=mat.isoformat(),
+                         years_to_maturity=(mat - VAL_DATE).days / 365.25,
+                         market_price_per_100=price))
+    df = pd.DataFrame(rows).drop_duplicates("instrument").reset_index(drop=True)
+    return df[(df["years_to_maturity"] > 1.0) & (df["market_price_per_100"] > 1.0)]
+
+
+def load_inputs(with_zcb: bool = True) -> "tuple[pd.DataFrame, pd.DataFrame, pd.Series]":
     a, dc = alm.Assumptions(), []
-    uni = alm.parse_fixed_income_basket(
-        alm.resolve_input_file(alm.INPUT_FILENAMES["fixed_income"]), a, dc)
-    uni = uni[uni["usable_for_optimizer"]].reset_index(drop=True)
+    base = parse_basket_5col(alm.resolve_input_file(alm.INPUT_FILENAMES["fixed_income"]))
+    if with_zcb:
+        zcb = parse_basket_5col(HERE / "Data" / "ZCB and ultra long coupon Bond.xlsx")
+        uni = (pd.concat([base, zcb], ignore_index=True)
+                 .drop_duplicates("instrument").reset_index(drop=True))
+    else:
+        uni = base
     _, _, curve, _ = alm.normalize_swap_curve(
         alm.resolve_input_file(alm.INPUT_FILENAMES["eur_swaps"]), "EUR", a, dc)
     liab = m.liability_cashflows(m.Config())
     return uni, curve, liab
 
 
-def df_at(curve: pd.DataFrame, t: np.ndarray) -> np.ndarray:
-    return np.asarray(alm.base_discount_factor(curve, np.asarray(t, dtype=float)))
+# --------------------------------------------------------------------------- #
+# key-rate DV01  -  tent-shaped 1bp bump of the zero curve at each key tenor
+# --------------------------------------------------------------------------- #
+def zero_cont(curve: pd.DataFrame, t: np.ndarray) -> np.ndarray:
+    """Continuously-compounded zero rate at `t` (flat-forward beyond the last node)."""
+    mt = curve["maturity_years"].to_numpy(dtype=float)
+    zc = curve["zero_rate_continuous"].to_numpy(dtype=float)
+    t = np.asarray(t, dtype=float)
+    z = np.interp(np.clip(t, mt[0], mt[-1]), mt, zc)
+    slope = (zc[-1] * mt[-1] - zc[-2] * mt[-2]) / (mt[-1] - mt[-2])
+    return np.where(t > mt[-1], (zc[-1] * mt[-1] + slope * (t - mt[-1])) / t, z)
+
+
+def _tent(t: np.ndarray, keys: np.ndarray, k: int, bump: float = 1e-4) -> np.ndarray:
+    """Triangular 1bp perturbation peaking at keys[k], zero at the neighbours
+    (flat = bump beyond the first / last key)."""
+    kt = keys[k]
+    lo = keys[k - 1] if k > 0 else -np.inf
+    hi = keys[k + 1] if k < len(keys) - 1 else np.inf
+    w = np.zeros_like(t)
+    left = (t >= lo) & (t <= kt)
+    right = (t > kt) & (t <= hi)
+    w[left] = 1.0 if not np.isfinite(lo) else (t[left] - lo) / (kt - lo)
+    w[right] = 1.0 if not np.isfinite(hi) else (hi - t[right]) / (hi - kt)
+    return w * bump
+
+
+def krd01(cflows: np.ndarray, times: np.ndarray, curve: pd.DataFrame,
+          keys: np.ndarray) -> np.ndarray:
+    """Key-rate DV01 vector (EUR loss per +1bp at each key tenor) for a cash-flow
+    stream, per unit of `cflows`.  Sum over keys ~ total DV01."""
+    z = zero_cont(curve, times)
+    pv0 = float((cflows * np.exp(-z * times)).sum())
+    out = np.zeros(len(keys))
+    for k in range(len(keys)):
+        pv1 = float((cflows * np.exp(-(z + _tent(times, keys, k)) * times)).sum())
+        out[k] = -(pv1 - pv0)
+    return out
 
 
 def build_matrices(uni: pd.DataFrame, curve: pd.DataFrame, liab: pd.Series):
-    horizon = int(liab.index.max())
-    yrs = np.arange(1, horizon + 1, dtype=float)
-    dfs = df_at(curve, yrs)
+    liab_h = int(liab.index.max())                       # cash-flow-match horizon
+    yrs = np.arange(1, PRICE_HORIZON + 1, dtype=float)    # full pricing grid
+    dfs = np.exp(-zero_cont(curve, yrs) * yrs)
 
-    # bond cash flows per EUR 1 nominal
     n = len(uni)
-    cf = np.zeros((n, horizon))
+    cf = np.zeros((n, PRICE_HORIZON))
     for i, row in uni.iterrows():
-        T = min(max(int(round(row["years_to_maturity"])), 1), horizon)
+        T = min(max(int(round(row["years_to_maturity"])), 1), PRICE_HORIZON)
         c = float(row["coupon"])
         cf[i, :T] += c
-        cf[i, T - 1] += 1.0                       # redemption
-    price = uni["market_price_per_100"].to_numpy() / 100.0     # per EUR 1 nominal
-    pv_bond = cf @ dfs                            # ~ price (asw spread aside)
+        cf[i, T - 1] += 1.0                               # redemption
+    price = uni["market_price_per_100"].to_numpy() / 100.0
+    pv_bond = cf @ dfs
 
-    # duration / convexity per EUR 1 nominal
     tcf = yrs * cf * dfs
     mac_dur = tcf.sum(axis=1) / np.where(pv_bond > 0, pv_bond, np.nan)
-    y_mat = np.array([np.interp(min(row["years_to_maturity"], 30),
-                                curve["maturity_years"], curve["zero_rate_annual"])
-                      for _, row in uni.iterrows()])
+    y_mat = zero_cont(curve, np.minimum(uni["years_to_maturity"].to_numpy(), 30.0))
     mod_dur = mac_dur / (1.0 + y_mat)
-    cvx = ((yrs * (yrs + 1.0)) * cf * dfs).sum(axis=1) / np.where(pv_bond > 0, pv_bond, np.nan) \
-        / (1.0 + y_mat) ** 2
+    cvx = ((yrs * (yrs + 1.0)) * cf * dfs).sum(axis=1) \
+        / np.where(pv_bond > 0, pv_bond, np.nan) / (1.0 + y_mat) ** 2
 
-    # key-rate DV01 buckets (EUR per bp per EUR 1 nominal)  -  cash-flow bucketed
-    bucket = np.abs(yrs[:, None] - KEY_TENORS[None, :]).argmin(axis=1)   # (horizon,)
-    krd_bond = np.zeros((n, len(KEY_TENORS)))
-    for j in range(len(KEY_TENORS)):
-        mask = bucket == j
-        krd_bond[:, j] = ((yrs * dfs)[mask] * cf[:, mask]).sum(axis=1) * 1e-4
-
-    Lvec = liab.reindex(yrs.astype(int)).fillna(0.0).to_numpy() / BN     # EUR bn
-    krd_liab = np.array([((yrs * dfs * Lvec)[bucket == j]).sum() * 1e-4
-                         for j in range(len(KEY_TENORS))])
-    liab_pv = float((Lvec * dfs).sum())                                  # EUR bn
+    # --- KRD (real key-rate DV01, tent-bumped zero curve) -----------------
+    krd_bond = np.vstack([krd01(cf[i], yrs, curve, KEY_TENORS) for i in range(n)])
+    Lvec = liab.reindex(yrs.astype(int)).fillna(0.0).to_numpy() / BN      # EUR bn
+    krd_liab = krd01(Lvec, yrs, curve, KEY_TENORS)
+    liab_pv = float((Lvec * dfs).sum())
     liab_dur = float((yrs * Lvec * dfs).sum() / liab_pv)
     liab_cvx = float((yrs * (yrs + 1.0) * Lvec * dfs).sum() / liab_pv)
 
     return dict(uni=uni, yrs=yrs, dfs=dfs, cf=cf, price=price, pv_bond=pv_bond,
                 mod_dur=mod_dur, cvx=cvx, krd_bond=krd_bond, krd_liab=krd_liab,
                 Lvec=Lvec, liab_pv=liab_pv, liab_dur=liab_dur, liab_cvx=liab_cvx,
-                horizon=horizon)
+                liab_h=liab_h)
 
 
 # --------------------------------------------------------------------------- #
 def _constraints(x, slack, M, reinvest, inst_cap, issuer_cap):
-    yrs, cf, price, Lvec = M["yrs"], M["cf"], M["price"], M["Lvec"]
+    """slack has length M['liab_h']; running cash balance >= 0 every liability
+    year (redemptions past the horizon simply do not enter - an ultra-long ZCB
+    is bought for its KRD, not for coverage)."""
+    cf, price, Lvec = M["cf"], M["price"], M["Lvec"]
     cons = [x >= 0, slack >= 0, price @ x <= BUDGET]
 
     bal = 0
-    for t in range(len(yrs)):
-        inflow = cf[:, t] @ x
-        bal = bal * (1.0 + reinvest) + inflow + slack[t] - Lvec[t]
+    for t in range(M["liab_h"]):
+        bal = bal * (1.0 + reinvest) + cf[:, t] @ x + slack[t] - Lvec[t]
         cons.append(bal >= 0)
 
     cons.append(cp.multiply(price, x) <= inst_cap * BUDGET)         # per instrument
@@ -147,27 +248,35 @@ def _solve(prob: cp.Problem, tag: str) -> None:
 def stage1(M, reinvest=0.015, inst_cap=0.15, issuer_cap=0.30):
     """Best achievable cash-flow coverage: minimise the PV of the external
     top-up the bond book cannot supply, spending up to the EUR 5bn budget."""
-    n = len(M["price"])
-    x, slack = cp.Variable(n, nonneg=True), cp.Variable(len(M["yrs"]), nonneg=True)
-    topup_pv = cp.sum(cp.multiply(M["dfs"], slack))
+    n, hh = len(M["price"]), M["liab_h"]
+    x, slack = cp.Variable(n, nonneg=True), cp.Variable(hh, nonneg=True)
+    topup_pv = cp.sum(cp.multiply(M["dfs"][:hh], slack))
     cons = _constraints(x, slack, M, reinvest, inst_cap, issuer_cap)
     prob = cp.Problem(cp.Minimize(topup_pv), cons)
     _solve(prob, "stage1")
     return x.value, slack.value, float(M["price"] @ x.value), float(topup_pv.value)
 
 
-def stage2(M, topup1, eps=0.05, w=None, reinvest=0.015,
+def stage2(M, topup1, eps=0.05, w=None, keep_dv01=0.0, reinvest=0.015,
            inst_cap=0.15, issuer_cap=0.30):
-    """Given the coverage from Stage 1, buy the bonds that best match the
-    liability key-rate profile - full EUR 5bn available, coverage allowed to
-    slip at most `eps` in top-up PV."""
-    n, nk = len(M["price"]), len(KEY_TENORS)
-    w = np.ones(nk) if w is None else np.asarray(w, float)
-    x, slack = cp.Variable(n, nonneg=True), cp.Variable(len(M["yrs"]), nonneg=True)
+    """Refine the KRD shape without giving back what Stage 1 achieved: same or
+    better coverage, and total DV01 not below Stage 1's."""
+    n, nk, hh = len(M["price"]), len(KEY_TENORS), M["liab_h"]
+    kl = M["krd_liab"]
+    # weight each bucket by where the liability actually has key-rate exposure,
+    # so a harmless over-hedge in a near-empty long bucket does not dominate the
+    # objective and force the ultra-longs back out
+    w = (np.maximum(kl, 0.0) / max(np.maximum(kl, 0.0).sum(), 1e-12)) if w is None \
+        else np.asarray(w, float)
+    x, slack = cp.Variable(n, nonneg=True), cp.Variable(hh, nonneg=True)
     krd_asset = M["krd_bond"].T @ x
-    obj = cp.sum(cp.multiply(w, cp.square(krd_asset - M["krd_liab"])))
+    # scale to EUR m/bp so the QP is well conditioned; add a soft one-sided
+    # penalty on total-DV01 overshoot so Stage 2 does not pile ultra-longs
+    over = cp.pos(cp.sum(krd_asset) - kl.sum()) * 1e3
+    obj = cp.sum(cp.multiply(w, cp.square((krd_asset - kl) * 1e3))) + 5.0 * cp.square(over)
     cons = _constraints(x, slack, M, reinvest, inst_cap, issuer_cap)
-    cons += [cp.sum(cp.multiply(M["dfs"], slack)) <= topup1 * (1.0 + eps) + 1e-4]
+    cons += [cp.sum(cp.multiply(M["dfs"][:hh], slack)) <= topup1 * (1.0 + eps) + 1e-4,
+             cp.sum(krd_asset) >= min(keep_dv01, kl.sum()) - 1e-4]   # keep Stage-1 duration
     prob = cp.Problem(cp.Minimize(obj), cons)
     _solve(prob, "stage2")
     return x.value, slack.value
@@ -189,70 +298,60 @@ def _portfolio_frame(uni, x, M) -> pd.DataFrame:
 
 
 def _stats(x, slack, M) -> dict:
-    """All monetary outputs in EUR (x/slack come in as EUR bn)."""
+    """All monetary outputs in EUR (x/slack come in as EUR bn).  DV01 / gap are
+    taken from the summed key-rate DV01 (exact repricing) - `mod_dur` from the
+    duration approximation is kept only as a readout."""
     alloc = M["price"] * x                                # EUR bn
     mv = alloc.sum()
     w = alloc / mv
     dur = float(w @ M["mod_dur"])
     cvx = float(w @ M["cvx"])
-    dv01_asset = mv * dur * 1e-4                          # EUR bn / bp
-    dv01_liab = M["liab_pv"] * M["liab_dur"] * 1e-4
     krd_asset = M["krd_bond"].T @ x                       # EUR bn / bp
+    dv01_asset = float(krd_asset.sum())                   # EUR bn / bp (from KRD)
+    dv01_liab = float(M["krd_liab"].sum())
     return dict(cost=float(M["price"] @ x) * BN, mv=float(mv) * BN,
-                mod_dur=dur, cvx=cvx,
-                dv01_asset=float(dv01_asset) * BN, dv01_liab=float(dv01_liab) * BN,
-                dv01_gap=float(dv01_liab - dv01_asset) * BN,
+                mod_dur=dur, eff_dur=dv01_asset * 1e4 / mv, cvx=cvx,
+                dv01_asset=dv01_asset * BN, dv01_liab=dv01_liab * BN,
+                dv01_gap=(dv01_liab - dv01_asset) * BN,
                 krd_asset=krd_asset * BN,
-                topup_pv=float((M["dfs"] * slack).sum()) * BN,
+                topup_pv=float((M["dfs"][:M["liab_h"]] * slack).sum()) * BN,
                 topup_nom=float(slack.sum()) * BN,
                 min_balance=_min_balance(x, slack, M) * BN)
 
 
 def _min_balance(x, slack, M, reinvest=0.015) -> float:
     bal, lo = 0.0, np.inf
-    for t in range(len(M["yrs"])):
+    for t in range(M["liab_h"]):
         bal = bal * (1 + reinvest) + M["cf"][:, t] @ x + slack[t] - M["Lvec"][t]
         lo = min(lo, bal)
     return float(lo)
 
 
-STRIP_TENORS = (35, 40, 45, 50)
-
-
-def add_synthetic_strips(uni: pd.DataFrame, curve: pd.DataFrame) -> pd.DataFrame:
-    """Illustrative government principal STRIPS (coupon 0, single redemption) at
-    35/40/45/50y, priced fair on today's curve. Shows what a widened long-end /
-    zero-coupon universe buys before the real ISINs arrive."""
-    rows = []
-    for T in STRIP_TENORS:
-        price = 100.0 * float(alm.base_discount_factor(curve, float(T)))
-        rows.append({"instrument": f"SYNTH STRIP {2026 + T}", "issuer": f"STRIP {T}y",
-                     "category": "Gov", "coupon": 0.0,
-                     "maturity_year_metadata": 2026 + T,
-                     "maturity_date": f"{2026 + T}-09-02",
-                     "years_to_maturity": float(T),
-                     "market_price_per_100": price, "usable_for_optimizer": True})
-    return pd.concat([uni, pd.DataFrame(rows)], ignore_index=True)
-
-
 def _solve_two_stage(M):
     x1, s1, _, topup1 = stage1(M)
-    x2, s2 = stage2(M, topup1)
+    ka1 = float((M["krd_bond"].T @ x1).sum())          # Stage-1 total DV01
+    x2, s2 = stage2(M, topup1, keep_dv01=ka1)
     return x1, s1, x2, s2, _stats(x1, s1, M), _stats(x2, s2, M)
 
 
 def run() -> None:
     OUT.mkdir(exist_ok=True)
-    uni, curve, liab = load_inputs()
+    _, curve, liab = load_inputs()
+    base = load_inputs(with_zcb=False)[0]
+    wide = load_inputs(with_zcb=True)[0]
 
-    cases = {"current universe": uni,
-             "+ synthetic STRIPS 35-50y": add_synthetic_strips(uni, curve)}
-    L = []
+    cases = {"current basket only": base,
+             "+ ZCB & ultra-long workbook": wide}
+    L, results = [], {}
     A = L.append
-    A("# Case 3b - two-stage Fixed-Income optimiser (prototype)\n")
+    A("# Case 3b - two-stage Fixed-Income optimiser + key-rate DV01\n")
+    A("KRD = real key-rate DV01: a triangular 1bp bump of the zero curve at each "
+      f"key tenor {[int(t) for t in KEY_TENORS]}, cash flows repriced. Stage 1 "
+      "minimises the external top-up PV (cash-flow dedication); Stage 2 minimises "
+      "Sum_j (KRD_asset(j) - KRD_liab(j))^2 with the full EUR 5bn, coverage "
+      "allowed to slip <= 5%.\n")
 
-    hdr_done = False
-    results = {}
+    hdr = False
     for name, u in cases.items():
         M = build_matrices(u, curve, liab)
         x1, s1, x2, s2, st1, st2 = _solve_two_stage(M)
@@ -261,58 +360,61 @@ def run() -> None:
                             "stage2": st2["krd_asset"]})
         krd["gap"] = krd["liability"] - krd["stage2"]
 
-        if not hdr_done:
+        if not hdr:
             A(f"Liability PV EUR {M['liab_pv']:.2f}bn, duration {M['liab_dur']:.1f}y, "
               f"convexity {M['liab_cvx']:.0f}.  Reinvestment credit 1.5%, "
-              f"issuer cap 30%, instrument cap 15%, Stage-2 eps 5%.\n")
-            hdr_done = True
+              f"issuer cap 30%, instrument cap 15%.\n")
+            hdr = True
 
-        tag = name.replace(" ", "_").replace("+", "plus").replace("-", "_")
+        tag = "base" if "only" in name else "wide"
         _portfolio_frame(u, x2, M).to_csv(OUT / f"portfolio_{tag}.csv", index=False)
         krd.to_csv(OUT / f"krd_{tag}.csv", index=False)
 
-        A(f"## {name}  ({len(u)} bonds, {(u['coupon'] == 0).sum()} zero-coupon)\n")
+        A(f"## {name}  ({len(u)} bonds, {(u['coupon'] == 0).sum()} zero-coupon, "
+          f"longest {u['years_to_maturity'].max():.0f}y)\n")
         A("| metric | Stage 1 | Stage 2 (+KRD) | liability |")
         A("|---|--:|--:|--:|")
-        A(f"| modified duration (y) | {st1['mod_dur']:.1f} | **{st2['mod_dur']:.1f}** | {M['liab_dur']:.1f} |")
+        A(f"| effective duration (y, from KRD) | {st1['eff_dur']:.1f} | **{st2['eff_dur']:.1f}** | {M['liab_dur']:.1f} |")
         A(f"| convexity | {st1['cvx']:.0f} | {st2['cvx']:.0f} | {M['liab_cvx']:.0f} |")
         A(f"| asset DV01 (EUR m/bp) | {st1['dv01_asset']/1e6:.1f} | **{st2['dv01_asset']/1e6:.1f}** | {st1['dv01_liab']/1e6:.1f} |")
         A(f"| **surplus DV01 gap (EUR m/bp)** | {st1['dv01_gap']/1e6:.1f} | **{st2['dv01_gap']/1e6:.1f}** | - |")
         A(f"| external top-up PV (EUR bn) | {st1['topup_pv']/1e9:.2f} | {st2['topup_pv']/1e9:.2f} | - |")
         A(f"| min running cash balance (EUR m) | {max(st1['min_balance'],0)/1e6:.0f} | {max(st2['min_balance'],0)/1e6:.0f} | - |\n")
-        A("KRD DV01 gap by tenor (EUR m/bp): " + ", ".join(
+        A("Stage-2 KRD DV01 gap by tenor (EUR m/bp): " + ", ".join(
             f"{int(t)}y {g/1e6:+.1f}" for t, g in zip(krd["key_tenor"], krd["gap"])) + "\n")
+        A("Stage-2 holdings: " + ", ".join(
+            f"{r.instrument.split(' REGS')[0]} {r.eur_allocation/1e9:.2f}bn"
+            for r in _portfolio_frame(u, x2, M).head(10).itertuples()) + "\n")
 
-    _chart(*results["+ synthetic STRIPS 35-50y"][:2],
-           pd.read_csv(OUT / "krd_plus_synthetic_STRIPS_35_50y.csv"))
+    _chart(*results["+ ZCB & ultra-long workbook"][:2],
+           pd.read_csv(OUT / "krd_wide.csv"))
 
-    m0 = results["current universe"][3]
-    m1 = results["+ synthetic STRIPS 35-50y"][3]
+    m0, m1 = results["current basket only"][3], results["+ ZCB & ultra-long workbook"][3]
+    Mw = results["+ ZCB & ultra-long workbook"][0]
     A("## Read\n")
-    A(f"- **Stage 2 (the mechanism)**: fix cash flows first, then spend the "
-      f"whole EUR 5bn on the bonds that best match the liability KRD. With the "
-      f"current 14-30y universe it can only reach ~{m0['mod_dur']:.0f}y duration "
-      f"(surplus DV01 gap ~EUR {m0['dv01_gap']/1e6:.0f}m/bp) - the near-year "
-      f"coverage eats the budget and there is nothing to buy past 30y.")
-    A(f"- **Adding zero-coupon STRIPS 35-50y (idea 3)**: duration "
-      f"{m0['mod_dur']:.1f} -> {m1['mod_dur']:.1f}y, surplus DV01 gap "
-      f"{m0['dv01_gap']/1e6:.1f} -> {m1['dv01_gap']/1e6:.1f} EUR m/bp, "
-      f"convexity {m0['cvx']:.0f} -> {m1['cvx']:.0f} (liability {results['current universe'][0]['liab_cvx']:.0f}); "
-      f"the 40y KRD gap roughly halves. Bigger real-world universes (OATs to "
-      f"2072, Bund/OAT strips, EU/SSA ultra-longs) + a modest issuer-cap "
-      f"tightening push this further.")
+    A("- **Stage 2 (mechanism)**: Stage 1 minimises the cash-flow top-up and "
+      "with the ultra-long ZCBs over-terms hard (effective duration ~54y, DV01 "
+      "~2x the liability); Stage 2 then reshapes to the liability KRD while "
+      "keeping full coverage - a sane, KRD-matched book.")
+    A(f"- **Adding the ZCB / ultra-long workbook** (Stage 2): effective duration "
+      f"(from KRD) {m0['eff_dur']:.1f} -> **{m1['eff_dur']:.1f}y** (liability "
+      f"{Mw['liab_dur']:.1f}y), surplus DV01 gap "
+      f"{m0['dv01_gap']/1e6:+.1f} -> **{m1['dv01_gap']/1e6:+.1f} EUR m/bp** "
+      f"(≈ closed), convexity {m0['cvx']:.0f} -> **{m1['cvx']:.0f}** (liability "
+      f"{Mw['liab_cvx']:.0f}), and the cash-flow top-up "
+      f"{m0['topup_pv']/1e9:.2f} -> **{m1['topup_pv']/1e9:.2f} bn PV**.")
     A("- **Convexity** is fought by (i) matching KRD *buckets*, not just total "
-      "DV01 - that forces the cash-flow dispersion to track the liability; and "
-      "(ii) STRIPS - one cash flow at a long maturity gives more convexity per "
-      "year of duration and no reinvestment drag. The residual 40y+ shortfall "
-      "is the piece for a small long receiver-swap / receiver swaption.")
-    A(f"- **External top-up** (EUR ~{m1['topup_pv']/1e9:.1f}bn PV, mostly "
-      "years 31-50) stays the return book's + future premiums' job - the FI "
-      "book is EUR 5bn against a EUR 6.4bn liability, it is not meant to "
-      "dedicate the whole thing.")
+      "DV01 - forces the asset cash-flow dispersion onto the liability; and "
+      "(ii) the zero-coupon bonds - one cash flow at a long maturity, higher "
+      "convexity per year of duration, no reinvestment drag.")
+    A(f"- **Residual**: whatever KRD gap remains past the longest usable bond, "
+      f"plus the ~EUR {m1['topup_pv']/1e9:.1f}bn PV external top-up (years past "
+      f"the coverage horizon), stays for a small long receiver swap / swaption "
+      f"and the return book + future premiums.")
     _write(OUT / "REPORT.md", L)
     print("\n".join(L))
-    print(f"\nwrote {OUT}/ : portfolio_*.csv, krd_*.csv, cfmatch_v2.png, REPORT.md")
+    print(f"\nwrote {OUT}/ : portfolio_base.csv, portfolio_wide.csv, krd_*.csv, "
+          f"cfmatch_v2.png, REPORT.md")
 
 
 def _write(path: Path, lines: list) -> None:
@@ -328,13 +430,14 @@ def _chart(M, x2, krd):
 
     xk = np.arange(len(KEY_TENORS))
     ax[0].bar(xk - 0.18, krd["liability"] / 1e6, 0.36, color=C_L, label="liability")
-    ax[0].bar(xk + 0.18, krd["stage2"] / 1e6, 0.36, color=C2, label="Stage 2 (+STRIPS)")
+    ax[0].bar(xk + 0.18, krd["stage2"] / 1e6, 0.36, color=C2, label="Stage 2 (+ZCB set)")
     ax[0].set_xticks(xk); ax[0].set_xticklabels([f"{int(t)}y" for t in KEY_TENORS])
     ax[0].set_title("Key-rate DV01 (EUR m / bp)"); ax[0].legend(frameon=False)
 
-    yrs = M["yrs"]
-    ax[1].bar(yrs, M["Lvec"] * 1e3, color=C_L, alpha=0.5, label="liability CF")
-    ax[1].step(yrs, (M["cf"].T @ x2) * 1e3, where="mid", color=C2, lw=2,
+    cut = min(len(M["yrs"]), M["liab_h"] + 5)
+    yrs = M["yrs"][:cut]
+    ax[1].bar(yrs, M["Lvec"][:cut] * 1e3, color=C_L, alpha=0.5, label="liability CF")
+    ax[1].step(yrs, (M["cf"][:, :cut].T @ x2) * 1e3, where="mid", color=C2, lw=2,
                label="Stage 2 bond CF")
     ax[1].set_title("Annual cash flows (EUR m)"); ax[1].set_xlabel("year")
     ax[1].legend(frameon=False)

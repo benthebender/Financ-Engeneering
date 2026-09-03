@@ -31,7 +31,10 @@ primary, put duration second:
   bonds that best fit the liability's KRD shape.
 
 Prototype: `cashflow_match_v2.py` (leaves `alm_fixed_income_.py` untouched;
-outputs to `results_v2/`).
+outputs to `results_v2/`).  KRD = **real key-rate DV01**: a triangular 1bp bump
+of the zero curve at each key tenor (2, 5, 10, 15, 20, 25, 30, 40, 50, 65, 90y),
+cash flows repriced.  Stage 2 also carries a one-sided overshoot penalty and a
+"do not give back Stage-1 duration" floor.
 
 **3. Widen the long-duration universe** - the real enabler. The optimiser can
 only match a KRD bucket if it owns a bond that matures there. Add ultra-long
@@ -39,18 +42,22 @@ core / semi-core EGBs, EU / SSA ultra-longs, and especially **government
 STRIPS** (zero-coupon). Tighten the single-issuer cap (e.g. 10% for non-AAA)
 once the set is deep enough so the caps stop forcing the book off duration.
 
-Prototype result (current 16-bond set vs. the same set + synthetic 35-50y
-STRIPS):
+Prototype result - current 16-bond basket vs. basket + the
+`ZCB and ultra long coupon Bond.xlsx` workbook (EIB / IBRD / AFDB zeros to
+2059-2061, AUST century zeros, NRW 2119-2121), Stage 2:
 
-| | current universe | + STRIPS 35-50y | liability |
+| | basket only | + ZCB / ultra-long | liability |
 |---|--:|--:|--:|
-| modified duration | 14.9y | **16.1y** | 20.0y |
-| surplus DV01 gap | 5.4 m/bp | **4.8 m/bp** | - |
-| convexity | 290 | **350** | 472 |
-| 40y KRD DV01 gap | +1.4 m/bp | **+0.7 m/bp** | - |
+| effective duration (from KRD) | 17.6y | **29.2y** | 20.0y |
+| surplus DV01 gap | +4.0 m/bp | **-1.8 m/bp** (≈ closed) | - |
+| convexity | 296 | **332** | 472 |
+| cash-flow top-up PV | EUR 1.14bn | **EUR 0.00bn** (fully covered) | - |
 
-Real ultra-long ISINs (OATs to 2072, Bund/OAT/DSL strips, EU/NGEU 2050s,
-KfW/EIB/CADES 30y+) plus the tighter caps push this materially further.
+Stage 1 (min top-up) over-terms hard with the ultra-longs (~54y effective
+duration, ~2x the liability DV01); Stage 2 reshapes to the liability KRD while
+keeping full coverage.  The residual **15y** bucket (liability EUR 5.7m/bp vs
+asset EUR 2.8m/bp - the year-15 lump sum, un-hedgeable under the 15% instrument
+cap) is the piece for a ~15y receiver swap or an accepted mismatch.
 
 ## Battling convexity - STRIPS + KRD
 
