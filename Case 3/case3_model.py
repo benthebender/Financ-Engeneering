@@ -689,7 +689,9 @@ def resolve_overlay(book: Book, unhedged_pnl: pd.DataFrame, cfg: Config) -> dict
 # ==========================================================================
 # 13. DETERMINISTIC STRESS TESTS
 # ==========================================================================
-def stress_tests(book: Book) -> pd.DataFrame:
+def stress_tests(book: Book, future_hedge_ratio: float = 0.0) -> pd.DataFrame:
+    """`future_hedge_ratio` > 0 adds the short equity-index futures overlay: a
+    short of `ratio * equity MV` that offsets that fraction of every equity shock."""
     grid, zero = book.base_grid, book.base_zero
     yrs = book.liability_cf.index.to_numpy(dtype=float)
     cfv = book.liability_cf.to_numpy()
@@ -726,10 +728,12 @@ def stress_tests(book: Book) -> pd.DataFrame:
         fi_pnl, liab_pnl = rate_pnl(s.get("dy", 0.0))
         eq_pnl, hy_pnl = eq_mv * s.get("eq", 0.0), hy_mv * s.get("hy", 0.0)
         rc_pnl = rc_mv * (0.5 * s.get("eq", 0.0) + 0.3 * s.get("hy", 0.0))
+        fut_pnl = -future_hedge_ratio * eq_mv * s.get("eq", 0.0)   # short overlay
         liab_pnl += s.get("liab_mult", 0.0) * pv0
-        asset = fi_pnl + eq_pnl + hy_pnl + rc_pnl
+        asset = fi_pnl + eq_pnl + hy_pnl + rc_pnl + fut_pnl
         rows.append({"scenario": name, "fi_bonds": fi_pnl, "equity": eq_pnl,
                      "high_yield": hy_pnl, "rates_credit_idx": rc_pnl,
+                     "futures_overlay": fut_pnl,
                      "asset_pnl": asset, "liability_pnl": liab_pnl,
                      "surplus_pnl": asset - liab_pnl})
     return pd.DataFrame(rows).set_index("scenario")
@@ -863,7 +867,7 @@ def run_hs(cfg: Config, tag: str | None = None) -> dict:
              "fx_hedge_residual", "futures_overlay", "liability_pnl"]
     comp_var = {c: var_stats(pnl[c].to_numpy(), cfg.confidence)["hist_var"] for c in comps}
     pd.Series(comp_var, name="hist_var_eur").to_csv(OUT / f"component_var_{tag}.csv")
-    stress = stress_tests(book)
+    stress = stress_tests(book, future_hedge_ratio=float(cfg.future_hedge_ratio or 0.0))
     stress.to_csv(OUT / f"stress_tests_{tag}.csv")
     _hs_chart(pnl, asset, surplus, comp_var, stress, cfg, tag)
 

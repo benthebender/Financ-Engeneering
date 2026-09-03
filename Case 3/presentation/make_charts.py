@@ -198,8 +198,11 @@ def var_bridge():
 
 
 def stress():
+    """unhedged  vs  full hedge stack = FX swap + 15y/30y receiver IRS +
+    30% equity-index futures short.  (The risk-control rule sets the futures
+    ratio to 0% once the IRS is on; 30% is shown as the discretionary maximum.)"""
     u = pd.read_csv(CASE / "results_var" / "stress_tests_full_unhedged.csv").set_index("scenario")
-    h = pd.read_csv(CASE / "results_var" / "stress_tests_full_irs.csv").set_index("scenario")
+    h = pd.read_csv(CASE / "results_var" / "stress_tests_full_hedged_fut30.csv").set_index("scenario")
     order = ["EUR rates +100bp parallel", "EUR rates -100bp parallel", "Equity -30%",
              "HY spread +300bp (~-12%)", "2022 replay: rates +250bp, equity -20%",
              "2008 replay: equity -45%, rates -150bp, HY -25%",
@@ -211,14 +214,17 @@ def stress():
     y = np.arange(len(order))
     fig, ax = plt.subplots(figsize=(9.6, 4.4))
     ax.barh(y - 0.2, su, 0.4, color=TEALL, label="unhedged")
-    ax.barh(y + 0.2, sh, 0.4, color=DTEAL, label="+ receiver IRS")
+    ax.barh(y + 0.2, sh, 0.4, color=DTEAL, label="full hedge  (FX swap + receiver IRS + futures overlay)")
     ax.axvline(0, color="#8AA0A6", lw=1)
+    for yi, (a, b) in enumerate(zip(su, sh)):
+        ax.text(b - 0.05 if b < 0 else b + 0.05, yi + 0.2, f"{b:+.2f}", va="center",
+                ha="right" if b < 0 else "left", fontsize=8, color=DTEAL)
     ax.set_yticks(y)
     ax.set_yticklabels(short)
     ax.invert_yaxis()
     ax.set_xlabel("surplus P&L (EUR bn)   —   ΔAssets − ΔLiability")
-    ax.set_title("Deterministic stress tests – impact on economic surplus")
-    ax.legend(frameon=False, fontsize=10, loc="lower right")
+    ax.set_title("Deterministic stress tests – unhedged vs. the full hedge stack")
+    ax.legend(frameon=False, fontsize=8.6, loc="upper left")
     _style(ax)
     _save(fig, "stress.png")
 
