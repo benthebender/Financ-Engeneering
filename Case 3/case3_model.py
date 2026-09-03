@@ -92,6 +92,9 @@ class Config:
     return_book_mode: str = "sum"
     rebalance_per_year: int = 1          # annual, at year end
     profit_share_policyholder: float = 0.90
+    # receive-fixed IRS overlay on the FI book: ((tenor_years, notional_eur), ...)
+    # par-struck, notional NOT exchanged -> no cash outlay, only variation margin
+    irs_receiver: "tuple[tuple[float, float], ...]" = ()
 
     # --- guaranteed liability (IAS) ---
     guaranteed_rate: float = 0.01
@@ -257,6 +260,7 @@ class Book:
     base_zero: np.ndarray
     base_usd_1y: float
     base_eur_1y: float
+    irs: list = field(default_factory=list)   # receive-fixed swaps: {tenor,notional,s0}
 
     @property
     def liability_pv(self) -> float:
@@ -308,11 +312,28 @@ def build_book(cfg: Config) -> Book:
     sleeves = pd.DataFrame(rows)
 
     ur = _latest_row(usd_hist)
+    pt = base_par.index.to_numpy(dtype=float)
+    irs = [{"tenor": float(T), "notional": float(N),
+            "s0": float(np.interp(T, pt, base_par.to_numpy()))}
+           for T, N in cfg.irs_receiver]
     return Book(cfg=cfg, fi=fi, sleeves=sleeves,
                 liability_cf=liability_cashflows(cfg),
                 base_grid=grid, base_zero=zero,
                 base_usd_1y=float(ur.get(1, ur.iloc[0])),
-                base_eur_1y=float(base_par.get(1, base_par.iloc[0])))
+                base_eur_1y=float(base_par.get(1, base_par.iloc[0])), irs=irs)
+
+
+def irs_receiver_mtm(irs: list, grid: np.ndarray, zero: np.ndarray) -> float:
+    """Sum of par receive-fixed swap MTMs on a (possibly shifted) zero curve:
+    N * [ s0 * annuity - (1 - DF(T)) ].  ~0 at the base curve (par-struck)."""
+    m = 0.0
+    for sw in irs:
+        T = int(round(sw["tenor"]))
+        pay = np.arange(1, T + 1, dtype=float)
+        A = float(discount(grid, zero, pay).sum())
+        dfT = float(discount(grid, zero, np.array([float(T)]))[0])
+        m += sw["notional"] * (sw["s0"] * A - (1.0 - dfT))
+    return m
 
 
 # ==========================================================================
@@ -540,23 +561,28 @@ def reprice(book: Book, sc: Scenarios, cfg: "Config | None" = None) -> pd.DataFr
         rw = sc.idx_logret["MSCI World Index"].to_numpy()
         fut_pnl = -short_notional * (np.exp(rw) - 1.0)
 
-    # -- guaranteed liability: full revaluation on the shifted zero curve --
+    # -- guaranteed liability + receive-fixed IRS: full reval on the shifted curve
     yrs = book.liability_cf.index.to_numpy(dtype=float)
     cfv = book.liability_cf.to_numpy()
     pv0 = float(np.sum(cfv * discount(grid, zero, yrs)))
+    irs0 = irs_receiver_mtm(book.irs, grid, zero) if book.irs else 0.0
     liab_pnl = np.empty(sc.n)
+    irs_pnl = np.zeros(sc.n)
     for k in range(sc.n):
         dzero = np.interp(np.clip(grid, tenors[0], tenors[-1]), tenors, chg[k])
         liab_pnl[k] = float(np.sum(cfv * discount(grid, zero + dzero, yrs))) - pv0
+        if book.irs:
+            irs_pnl[k] = irs_receiver_mtm(book.irs, grid, zero + dzero) - irs0
 
     out = pd.DataFrame({
         "date": sc.dates, "fi_bonds": fi_pnl, "equity": by_kind["EQUITY"],
         "high_yield": by_kind["HY"], "rates_credit_idx": by_kind["RATES_CREDIT"],
         "fx_hedge_residual": fx_resid, "futures_overlay": fut_pnl,
+        "irs_hedge": irs_pnl,
     })
     out["asset_pnl"] = (out["fi_bonds"] + out["equity"] + out["high_yield"]
                         + out["rates_credit_idx"] + out["fx_hedge_residual"]
-                        + out["futures_overlay"])
+                        + out["futures_overlay"] + out["irs_hedge"])
     out["liability_pnl"] = liab_pnl
     out["surplus_pnl"] = out["asset_pnl"] - out["liability_pnl"]
     return out
@@ -670,8 +696,12 @@ def stress_tests(book: Book) -> pd.DataFrame:
     eq_mv, hy_mv = book.equity_mv, book.sleeves.loc[book.sleeves["kind"] == "HY", "mv_eur"].sum()
     rc_mv = book.sleeves.loc[book.sleeves["kind"] == "RATES_CREDIT", "mv_eur"].sum()
 
+    irs0 = irs_receiver_mtm(book.irs, grid, zero) if book.irs else 0.0
+
     def rate_pnl(dy):
         fi = float((mv * (-mdur * dy + 0.5 * conv * dy ** 2)).sum())
+        if book.irs:
+            fi += irs_receiver_mtm(book.irs, grid, zero + dy) - irs0
         liab = float(np.sum(cfv * discount(grid, zero + dy, yrs))) - pv0
         return fi, liab
 
@@ -824,7 +854,7 @@ def run_hs(cfg: Config, tag: str | None = None) -> dict:
     pnl.to_csv(OUT / f"scenario_pnl_{tag}.csv", index=False)
     asset = var_stats(pnl["asset_pnl"].to_numpy(), cfg.confidence)
     surplus = var_stats(pnl["surplus_pnl"].to_numpy(), cfg.confidence)
-    comps = ["fi_bonds", "equity", "high_yield", "rates_credit_idx",
+    comps = ["fi_bonds", "irs_hedge", "equity", "high_yield", "rates_credit_idx",
              "fx_hedge_residual", "futures_overlay", "liability_pnl"]
     comp_var = {c: var_stats(pnl[c].to_numpy(), cfg.confidence)["hist_var"] for c in comps}
     pd.Series(comp_var, name="hist_var_eur").to_csv(OUT / f"component_var_{tag}.csv")
@@ -843,6 +873,10 @@ def run_hs(cfg: Config, tag: str | None = None) -> dict:
       f"{book.fi['eur_allocation'].sum()/1e9:,.2f}bn, {len(book.fi)} bonds")
     A(f"- Return book (t=1..10, 10 x EUR 0.5bn, {cfg.return_weight_set}): EUR "
       f"{book.sleeves['mv_eur'].sum()/1e9:,.2f}bn  (equity EUR {book.equity_mv/1e9:,.2f}bn)")
+    if book.irs:
+        A("- Receive-fixed IRS overlay (par, notional not exchanged, no cash): "
+          + ", ".join(f"{int(s['tenor'])}y EUR {s['notional']/1e9:.1f}bn @ {s['s0']:.2%}"
+                      for s in book.irs))
     A(f"- Total assets EUR {book.asset_mv/1e9:,.2f}bn | guaranteed liability PV "
       f"EUR {book.liability_pv/1e9:,.2f}bn | funding ratio "
       f"{book.asset_mv/book.liability_pv:,.2f}\n")
@@ -1025,7 +1059,10 @@ def run_all(mc_paths: int = 25_000) -> None:
     run_hs(Config(deployment="full"), tag="full_overlay")
     run_hs(Config(deployment="t0", future_hedge_ratio=0.0), tag="t0_inception")
     run_hs(Config(deployment="full", return_book_mode="projected",
-                  future_hedge_ratio=0.0), tag="full_projected")   # semi-annual
+                  future_hedge_ratio=0.0), tag="full_projected")   # annual profit share
+    run_hs(Config(deployment="full", future_hedge_ratio=0.0,
+                  irs_receiver=((15.0, 2.8e9), (30.0, 0.3e9))),
+           tag="full_irs")   # receiver-swap overlay sized by cashflow_match_v2.size_irs
     run_mc(Config(deployment="full"), n_paths=mc_paths, tag="mc_full")
 
 

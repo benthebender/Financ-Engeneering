@@ -40,3 +40,14 @@ Stage-2 holdings: KFW 0.945 12/17/2040 Corp 0.75bn, BGB 4 ¼ 03/28/2041 Corp 0.7
 - **Adding the ZCB / ultra-long workbook** (Stage 2): effective duration (from KRD) 17.6 -> **29.2y** (liability 20.0y), surplus DV01 gap +4.0 -> **-1.8 EUR m/bp** (≈ closed), convexity 296 -> **332** (liability 472), and the cash-flow top-up 1.14 -> **0.00 bn PV**.
 - **Convexity** is fought by (i) matching KRD *buckets*, not just total DV01 - forces the asset cash-flow dispersion onto the liability; and (ii) the zero-coupon bonds - one cash flow at a long maturity, higher convexity per year of duration, no reinvestment drag.
 - **Residual**: whatever KRD gap remains past the longest usable bond, plus the ~EUR 0.0bn PV external top-up (years past the coverage horizon), stays for a small long receiver swap / swaption and the return book + future premiums.
+
+## Necessary receive-fixed IRS (closes the Stage-2 residual)
+
+Par-struck, notional **not** exchanged -> no cash outlay (only variation margin); sits on top of the EUR 5bn bond book.  Sized by non-negative least squares of the receiver-swap key-rate DV01 onto the Stage-2 residual gap (liability - asset KRD).
+
+| tenor | receiver notional (EUR bn) | par fixed rate |
+|---|--:|--:|
+| 15y | **2.79** | 3.52% |
+| 30y | **0.27** | 3.46% |
+
+Total receiver notional EUR 3.06bn; this is the "necessary IRS" - it removes the residual surplus DV01 gap (-1.8 EUR m/bp) that the cash bond book cannot reach under the 15% instrument cap (mostly the 15y lump-sum bucket).

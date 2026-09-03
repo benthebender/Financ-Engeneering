@@ -211,7 +211,7 @@ def build_matrices(uni: pd.DataFrame, curve: pd.DataFrame, liab: pd.Series):
     return dict(uni=uni, yrs=yrs, dfs=dfs, cf=cf, price=price, pv_bond=pv_bond,
                 mod_dur=mod_dur, cvx=cvx, krd_bond=krd_bond, krd_liab=krd_liab,
                 Lvec=Lvec, liab_pv=liab_pv, liab_dur=liab_dur, liab_cvx=liab_cvx,
-                liab_h=liab_h)
+                liab_h=liab_h, curve=curve)
 
 
 # --------------------------------------------------------------------------- #
@@ -334,6 +334,34 @@ def _solve_two_stage(M):
     return x1, s1, x2, s2, _stats(x1, s1, M), _stats(x2, s2, M)
 
 
+def size_irs(M, gap_eur_per_bp: np.ndarray,
+             tenors=(10, 15, 20, 25, 30)) -> pd.Series:
+    """Size receive-fixed swaps to close the residual key-rate gap (liability
+    minus Stage-2 asset).  Par-struck, notional not exchanged -> no cash outlay.
+    KRD of a receiver swap per EUR 1 notional ~ KRD(par fixed bond) - KRD(1y
+    float leg).  Solve  min || Sum_T y_T * krd_swap_T - gap ||^2 ,  y_T >= 0."""
+    from scipy.optimize import nnls
+    curve, yrs, dfs = M["curve"], M["yrs"], M["dfs"]
+    cols, pars = [], []
+    for T in tenors:
+        Ti = int(T)
+        s0 = float((1.0 - dfs[Ti - 1]) / dfs[:Ti].sum())      # par swap rate
+        pars.append(s0)
+        cf = np.zeros(int(PRICE_HORIZON))
+        cf[:Ti] += s0
+        cf[Ti - 1] += 1.0
+        krd_fix = krd01(cf, yrs, curve, KEY_TENORS)
+        flt = np.zeros(int(PRICE_HORIZON)); flt[0] = 1.0
+        krd_flt = krd01(flt, yrs, curve, KEY_TENORS)
+        cols.append(krd_fix - krd_flt)               # EUR/bp per EUR 1 notional
+    S = np.vstack(cols).T                             # (nk, n_tenor)
+    y, _ = nnls(S, np.maximum(np.asarray(gap_eur_per_bp, float), 0.0))   # y in EUR
+    out = pd.Series(y / 1e9, index=[f"{t}y" for t in tenors],
+                    name="receiver_notional_eur_bn")
+    out.attrs["par_rates"] = dict(zip(out.index, pars))
+    return out
+
+
 def run() -> None:
     OUT.mkdir(exist_ok=True)
     _, curve, liab = load_inputs()
@@ -411,6 +439,29 @@ def run() -> None:
       f"plus the ~EUR {m1['topup_pv']/1e9:.1f}bn PV external top-up (years past "
       f"the coverage horizon), stays for a small long receiver swap / swaption "
       f"and the return book + future premiums.")
+
+    # ---- size the residual receive-fixed IRS (par, notional not exchanged) ----
+    gap_wide = pd.read_csv(OUT / "krd_wide.csv")["gap"].to_numpy()
+    irs_full = size_irs(Mw, gap_wide)
+    pr = irs_full.attrs["par_rates"]
+    irs = irs_full[irs_full > 1e-3]
+    A("\n## Necessary receive-fixed IRS (closes the Stage-2 residual)\n")
+    if len(irs):
+        A("Par-struck, notional **not** exchanged -> no cash outlay (only variation "
+          "margin); sits on top of the EUR 5bn bond book.  Sized by non-negative "
+          "least squares of the receiver-swap key-rate DV01 onto the Stage-2 "
+          "residual gap (liability - asset KRD).\n")
+        A("| tenor | receiver notional (EUR bn) | par fixed rate |")
+        A("|---|--:|--:|")
+        for t, n_ in irs.items():
+            A(f"| {t} | **{n_:.2f}** | {pr[t]:.2%} |")
+        A(f"\nTotal receiver notional EUR {irs.sum():.2f}bn; this is the "
+          f"\"necessary IRS\" - it removes the residual surplus DV01 gap "
+          f"({m1['dv01_gap']/1e6:+.1f} EUR m/bp) that the cash bond book cannot "
+          f"reach under the 15% instrument cap (mostly the 15y lump-sum bucket).")
+    else:
+        A("Stage-2 residual gap is already within noise - no IRS required.")
+
     _write(OUT / "REPORT.md", L)
     print("\n".join(L))
     print(f"\nwrote {OUT}/ : portfolio_base.csv, portfolio_wide.csv, krd_*.csv, "

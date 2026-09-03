@@ -59,6 +59,48 @@ keeping full coverage.  The residual **15y** bucket (liability EUR 5.7m/bp vs
 asset EUR 2.8m/bp - the year-15 lump sum, un-hedgeable under the 15% instrument
 cap) is the piece for a ~15y receiver swap or an accepted mismatch.
 
+## The residual - the "necessary" receive-fixed IRS
+
+`cashflow_match_v2.size_irs()` sizes the swap that closes the Stage-2 residual
+KRD gap.  It builds the key-rate DV01 of a par receive-fixed swap per EUR 1
+notional (`KRD(par fixed leg) - KRD(1y float leg)`) at candidate tenors
+{10, 15, 20, 25, 30}y and solves a non-negative least-squares fit of those
+columns onto the residual gap vector (liability KRD - Stage-2 asset KRD, only
+the positive/under-hedged buckets).
+
+Result on the +ZCB book:
+
+| tenor | receiver notional | par fixed rate |
+|---|--:|--:|
+| 15y | **EUR 2.8bn** | ~3.1% |
+| 30y | EUR 0.3bn | ~3.2% |
+
+Total ~EUR 3.1bn receiver notional, ~90% of it 15y - exactly the year-15
+lump-sum bucket the cash book cannot reach under the 15% instrument cap.
+
+**No cash is needed.** A par swap has PV zero at inception and the **notional is
+not exchanged**, so the receiver overlay sits on top of the fully-invested
+EUR 5bn bond book; only variation margin (a small fraction, posted from the
+FI coupon stream / a T-bill buffer) is required.  `case3_model.Config(
+irs_receiver=((15.0, 2.8e9), (30.0, 0.3e9)))` carries it into the VaR engine
+(`irs_receiver_mtm()` reprices the swap MTM on every scenario / stress curve and
+adds it to asset P&L).
+
+Effect on the 1y 99% HS VaR (full deployment, unhedged equity):
+
+| | no IRS | + receiver overlay |
+|---|--:|--:|
+| **Surplus VaR** | EUR 1,136m | **EUR 860m** (-24%) |
+| Asset VaR | EUR 2,590m | EUR 3,533m (+36%, expected - the swap adds rate duration to the asset side) |
+| non-equity surplus VaR | EUR 916m | EUR 424m |
+| stress: EUR rates -100bp (surplus) | EUR -634m | **EUR -201m** |
+| stress: 2008 replay (surplus) | EUR -3,211m | **EUR -2,535m** |
+
+The overlay is deliberately sized to the *surplus* risk, not to flatten asset
+DV01 - it trades a larger book-value swing on the asset side (which does not
+threaten the cash-flow match) for a materially smaller surplus / funding-ratio
+swing, which is what the board floor cares about.
+
 ## Battling convexity - STRIPS + KRD
 
 Matching duration is not enough: the liability's cash flows are spread across a

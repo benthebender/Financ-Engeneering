@@ -10,6 +10,7 @@ python case3_model.py                 # HS suite (unhedged / overlay / t0 / proj
 python case3_model.py hs full auto    # one HS run, rule-based hedge
 python case3_model.py hs full 0.30    # one HS run, hedge pinned at 30%
 python case3_model.py hs full auto projected   # return book from the annual profit-share path
+python case3_model.py                 # ... also emits the `full_irs` tag (receive-fixed swap overlay)
 python case3_model.py mc full 25000   # Monte-Carlo, 25k paths
 python case3_model.py returnbook      # annual rebalance + 90/10 profit-share projection
 ```
@@ -30,6 +31,23 @@ the insurer's asset side). `Config(return_book_mode="projected")` makes the VaR
 use this MV instead of the flat "10 x 0.5bn" sum (assets EUR 10.0 -> 10.26bn,
 Asset VaR ~2.65bn, Surplus VaR ~1.15bn).
 
+## Receive-fixed IRS overlay (`Config.irs_receiver`)
+
+`irs_receiver=((15.0, 2.8e9), (30.0, 0.3e9))` bolts a par receive-fixed swap
+overlay onto the FI book to close the residual asset/liability duration gap the
+cash bond book cannot reach under the 15 % instrument cap (mostly the year-15
+lump-sum bucket).  **No cash outlay** - a par swap has PV zero at inception and
+the notional is not exchanged, so it sits on top of the fully-invested EUR 5bn
+bond book (only variation margin).  `irs_receiver_mtm()` reprices the swap MTM,
+`N * (s0 * A - (1 - DF(T)))`, on every HS scenario / MC path / stress curve and
+adds it to asset P&L (`irs_hedge` component).  The notional per tenor is sized
+by `cashflow_match_v2.size_irs()` (NNLS of receiver-swap key-rate DV01 onto the
+Stage-2 residual gap).  Effect (full deployment HS, unhedged equity): Surplus
+VaR EUR 1,136m -> **EUR 860m** (-24 %); Asset VaR EUR 2,590m -> 3,533m (up, as
+expected - the swap adds rate duration on the asset side, which does not
+threaten the cash-flow match); 2008-replay surplus EUR -3,211m -> **-2,535m**.
+`run_all()` emits it as the `full_irs` tag.
+
 ## Structure (16 sections, top to bottom)
 
 | # | section | what it does |
@@ -49,7 +67,7 @@ Asset VaR ~2.65bn, Surplus VaR ~1.15bn).
 | 13 | **Stress tests** | rates ±100/200, equity −20/−30/−40, HY +300bp, 2022 & 2008 replays, longevity +1y |
 | 14 | **Monte Carlo** | shrunk-correlation multivariate Student-t (dof 5) weekly innovations, EUR curve via 3 PCs, Heston VIX layer, soft/hard tail guardrails, reprice with the same engine |
 | 15 | **Reports + charts** | `run_hs()` and `run_mc()` → `HS_REPORT_*.md` / `MC_REPORT_*.md` + `*_charts_*.png` + `scenario_pnl_*.csv` / `component_var_*.csv` / `stress_tests_*.csv` in `results_var/` |
-| 16 | **Orchestrator** | `run_all()` = 3 HS variants + 1 MC |
+| 16 | **Orchestrator** | `run_all()` = 5 HS variants (unhedged / overlay / t0 / projected return book / **IRS overlay**) + 1 MC |
 
 ## Reported
 
