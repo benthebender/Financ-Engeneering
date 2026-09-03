@@ -90,7 +90,7 @@ class Config:
     # = MV after the semi-annual rebalance + 90/10 profit-sharing path
     # (return_book.py)
     return_book_mode: str = "sum"
-    rebalance_per_year: int = 2
+    rebalance_per_year: int = 1          # annual, at year end
     profit_share_policyholder: float = 0.90
 
     # --- guaranteed liability (IAS) ---

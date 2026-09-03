@@ -1,14 +1,14 @@
-# Case 3b - return book: semi-annual rebalancing + 90/10 profit sharing
+# Case 3b - return book: annual rebalancing + 90/10 profit sharing
 
-2x / year rebalancing to Aggressive_Diversified; 90% of each half-year investment profit paid to policyholders (funded by selling an equal EUR amount from every sleeve), 10% retained and left invested. Deterministic per-sleeve half-year returns from the weekly history.
+Year-end rebalancing to Aggressive_Diversified (1x / year); 90% of each year's investment profit paid to policyholders (funded by selling an equal EUR amount from every sleeve), 10% retained and left invested. Deterministic per-sleeve annual returns from the weekly history.
 
 | | EUR bn |
 |---|--:|
 | contributions paid in (10 x 0.5) | 5.00 |
 | **return-book MV, end of accumulation** | **5.26** |
-| cumulative policyholder profit share | 2.36 |
+| cumulative policyholder profit share | 2.31 |
 | cumulative insurer retained (10%) | 0.26 |
-| naive fully-reinvested book (no profit share) | 8.58 |
+| naive fully-reinvested book (no profit share) | 8.39 |
 
 The 90% profit-share leakage is why the deployed return book is close to the contributions paid in rather than a fully-compounded figure - `case3_model` uses this MV as the return-book size when `return_book_mode='projected'`.
 

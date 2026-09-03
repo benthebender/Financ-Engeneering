@@ -2,28 +2,27 @@
 return_book.py
 ==============
 
-Semi-annual dynamics of the Case 3b **return portfolio** (14 indices,
+Annual (end-of-year) dynamics of the Case 3b **return portfolio** (14 indices,
 "Aggressive Diversified" weights), with the policyholder profit-sharing rule.
 
-Every 6 months:
-  1. each sleeve grows by its half-year return
-  2. the contribution tranche arrives (EUR 0.5bn / yr -> EUR 0.25bn per half
-     year, for the first `contribution_years` years) and is invested at the
-     target weights
+At each year end:
+  1. each sleeve grows by its return over the year
+  2. the contribution tranche arrives (EUR 0.5bn / yr, for the first
+     `contribution_years` years) and is invested at the target weights
   3. **profit sharing** - if the return book made an investment profit over the
-     half year (return-driven change in MV, contributions excluded, with a loss
+     year (return-driven change in MV, contributions excluded, with a loss
      carry-forward), **90 %** of it is paid out to policyholders and **10 %**
      is retained by the insurer and left invested (not cashed out).
      The 90 % payout is funded by **selling an equal EUR amount from each of
      the 14 sleeves** (capped at the sleeve's holding, shortfall redistributed).
   4. the remaining book is **rebalanced to the Aggressive Diversified target
-     weights** (the "run the optimiser every half year" step - weights come
-     from `portfolio_optimization_final.xlsx`; a live run would re-optimise on
-     data as of the rebalance date, hook: `weights_fn`).
+     weights** (the annual "run the optimiser" step - weights come from
+     `portfolio_optimization_final.xlsx`; a live run would re-optimise on data
+     as of the rebalance date, hook: `weights_fn`).
 
 Outputs
-    project(...) -> DataFrame (one row per half-year): mv_total, contribution,
-        pnl_half_year, payout_policyholder(+cum), retained_insurer(+cum),
+    project(...) -> DataFrame (one row per year): mv_total, contribution,
+        pnl_year, payout_policyholder(+cum), retained_insurer(+cum),
         and per-sleeve MV.
     projected_book_mv(...) -> the return-book MV at the end of the accumulation
         phase - the number `case3_model` uses as the deployed return-book size.
@@ -47,19 +46,19 @@ EUR_BN = 1e9
 class RBConfig:
     contribution_per_year_eur: float = 0.5 * EUR_BN
     contribution_years: int = 10
-    rebalance_per_year: int = 2                 # semi-annual
+    rebalance_per_year: int = 1                 # annual, at year end
     horizon_years: int = 10                     # accumulation phase
     profit_share_policyholder: float = 0.90     # requirement
     weight_set: str = "Aggressive_Diversified"
     seed_mv_eur: float = 0.0                    # return book size at t=0
 
 
-def half_year_returns_hist(weight_set: str = "Aggressive_Diversified") -> pd.Series:
-    """Deterministic per-sleeve half-year simple return from the weekly history
-    (compounded mean weekly log return over 26 weeks)."""
+def period_returns_hist(weeks: int) -> pd.Series:
+    """Deterministic per-sleeve simple return over `weeks` weeks, from the
+    weekly history (compounded mean weekly log return)."""
     px = load_index_history()
     wlr = np.log(px).diff().dropna()
-    return np.exp(26.0 * wlr.mean()) - 1.0            # Series indexed by sleeve
+    return np.exp(weeks * wlr.mean()) - 1.0           # Series indexed by sleeve
 
 
 def _sell_equal(mv: np.ndarray, amount: float) -> "tuple[np.ndarray, float]":
@@ -96,7 +95,7 @@ def project(rb: RBConfig | None = None,
     steps = rb.horizon_years * rb.rebalance_per_year
     dt = 1.0 / rb.rebalance_per_year
     if returns is None:
-        r1 = half_year_returns_hist(rb.weight_set).reindex(sleeves).to_numpy()
+        r1 = period_returns_hist(round(52 / rb.rebalance_per_year)).reindex(sleeves).to_numpy()
         returns = np.tile(r1, (steps, 1))
     returns = np.asarray(returns, dtype=float)
 
@@ -133,7 +132,7 @@ def project(rb: RBConfig | None = None,
 
         rows.append({
             "t_years": t, "mv_total": mv.sum(), "contribution": contribution,
-            "pnl_half_year": pnl, "loss_carry_forward": carry,
+            "pnl_year": pnl, "loss_carry_forward": carry,
             "payout_policyholder": payout, "payout_policyholder_cum": cum_pol,
             "retained_insurer": retained, "retained_insurer_cum": cum_ins,
             **{f"mv[{sl}]": v for sl, v in zip(sleeves, mv)},
@@ -156,12 +155,12 @@ def _report_and_chart(df: pd.DataFrame, rb: RBConfig) -> None:
     naive = rb.contribution_per_year_eur * rb.contribution_years
     end_mv = df["mv_total"].iloc[-1]
     L = [
-        "# Case 3b - return book: semi-annual rebalancing + 90/10 profit sharing\n",
-        f"{rb.rebalance_per_year}x / year rebalancing to {rb.weight_set}; "
-        f"90% of each half-year investment profit paid to policyholders (funded "
-        f"by selling an equal EUR amount from every sleeve), 10% retained and "
-        f"left invested. Deterministic per-sleeve half-year returns from the "
-        f"weekly history.\n",
+        "# Case 3b - return book: annual rebalancing + 90/10 profit sharing\n",
+        f"Year-end rebalancing to {rb.weight_set} ({rb.rebalance_per_year}x / "
+        f"year); 90% of each year's investment profit paid to policyholders "
+        f"(funded by selling an equal EUR amount from every sleeve), 10% "
+        f"retained and left invested. Deterministic per-sleeve annual returns "
+        f"from the weekly history.\n",
         "| | EUR bn |", "|---|--:|",
         f"| contributions paid in (10 x 0.5) | {naive/1e9:.2f} |",
         f"| **return-book MV, end of accumulation** | **{end_mv/1e9:.2f}** |",
@@ -204,7 +203,7 @@ def _report_and_chart(df: pd.DataFrame, rb: RBConfig) -> None:
         a_.grid(color=GRID, lw=0.7); a_.set_axisbelow(True)
         for sp in ("top", "right"):
             a_.spines[sp].set_visible(False)
-    fig.suptitle("Case 3b - return book semi-annual dynamics", fontsize=13,
+    fig.suptitle("Case 3b - return book annual dynamics", fontsize=13,
                  fontweight="bold")
     fig.tight_layout(rect=(0, 0, 1, 0.95))
     fig.savefig(OUT / "return_book_projection.png", dpi=140, bbox_inches="tight")
