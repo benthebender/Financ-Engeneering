@@ -120,13 +120,16 @@ def profit_share():
     ax.plot(x, np.cumsum(d["contribution"]) / 1e9, color=INK, lw=1.4, ls=(0, (5, 3)),
             label="cumulative contributions")
     ax.plot(x, d["payout_policyholder_cum"] / 1e9, color=ORANGE, lw=2.6,
-            label="cumulative policyholder profit share (90%)")
+            label="cumulative policyholder profit share (90%, yr 15+)")
     ax.plot(x, d["retained_insurer_cum"] / 1e9, color=GREEN, lw=2.6,
             label="insurer retained (10%)")
-    ax.set_xlabel("accumulation year")
+    ax.axvline(15, color=ORANGE, lw=1.1, ls=":")
+    ax.text(15.2, ax.get_ylim()[1] * 0.06, "profit sharing\nstarts (yr 15)", fontsize=8.5,
+            color=ORANGE)
+    ax.set_xlabel("year")
     ax.set_ylabel("EUR bn")
-    ax.set_title("Return portfolio – 90 / 10 profit sharing over the 10-year accumulation")
-    ax.legend(frameon=False, fontsize=9.5, loc="upper left")
+    ax.set_title("Return portfolio – full compounding to yr 15, then 90 / 10 profit sharing")
+    ax.legend(frameon=False, fontsize=9, loc="upper left")
     _style(ax)
     _save(fig, "profit_share.png")
 

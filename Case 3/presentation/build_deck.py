@@ -275,8 +275,8 @@ box(s, 0.44, 4.30, 12.5, 1.15, fill=DTEAL)
 text(s, 0.72, 4.44, 12.0, 0.95,
      [[("In short: ", 13, dict(color=WHITE, bold=True, italic=True)),
        ("a cash-flow- and key-rate-matched bond book clears the €11.3bn guaranteed floor; the "
-        "surplus funds an aggressive, diversified return portfolio with a 90/10 policyholder "
-        "profit share. A par receiver-IRS overlay (no cash outlay) closes the residual duration gap.",
+        "surplus funds an aggressive, diversified return portfolio, with a 90/10 policyholder "
+        "profit share from year 15. A par receiver-IRS overlay (no cash outlay) closes the residual duration gap.",
         13, dict(color=WHITE, italic=True))]])
 bullets(s, 0.5, 5.66, 12.4, 1.1, [
     ("Funding waterfall  ", "t=0 → €5.0bn into the liability-matching bond book;  t=1..10 → €0.5bn/yr into the return portfolio."),
@@ -816,17 +816,17 @@ panel(s, 6.72, 4.9, 6.22, 1.6, "So the upside is real", [
 note(s, "Source: mixed_liability_scenarios.xlsx (Scenario Summary); monte_carlo_ALM_results.xlsx (Scenario EUR bn).")
 
 # ---- 6c  Profit share ------------------------------------------------- #
-s = content("Sharing the Upside – 90 / 10 on the Return Portfolio",
-            "A requirement: 90% of the return book's yearly profit goes to policyholders", 5)
+s = content("Sharing the Upside – 90 / 10 From Year 15",
+            "The whole return compounds until benefits begin; then 90% of profit goes to policyholders", 5)
 banner(s, "Where the surplus goes")
 image(s, "profit_share.png", 0.44, 1.9, 7.5)
 panel(s, 8.15, 1.9, 4.79, 4.55, "Mechanics", [
-    ("90% to policyholders.  ", "each year's investment profit on the RSP is 90% distributed, funded by selling an equal EUR amount from every sleeve."),
-    ("10% retained, reinvested.  ", "stays in the book and compounds; losses carry forward and net against future profit first."),
-    ("Over the 10-year accumulation.  ", "contributions €5.00bn → return-book MV €5.26bn; €2.31bn shared to policyholders; €0.26bn retained."),
+    ("Years 1–14: no sharing.  ", "the whole investment return compounds in the book – contributions €5.0bn → return-book MV ≈ €8.4bn by year 10."),
+    ("Year 15+: 90 / 10.  ", "90% of each year's investment profit paid to policyholders (equal EUR sold from every sleeve), 10% retained and reinvested; losses carry forward first."),
+    ("Payout phase (yr 15–20).  ", "≈ €7.8bn cumulative to policyholders, ≈ €0.9bn retained; book ≈ €13.6bn at year 20 (deterministic-return projection)."),
     ("Guarantee untouched.  ", "the 90% is a pass-through off the insurer's asset side – it never draws on the LMP."),
-], size=9.3)
-note(s, "Source: return_book.py / results_var/RETURN_BOOK_REPORT.md.  Naive fully-reinvested book (no share) would be €8.39bn.")
+], size=9.2)
+note(s, "Source: return_book.py (profit_share_start_year = 15).  Headline VaR uses the conservative flat €5.0bn return book; the projected €8.4bn book is the 'full_projected' sensitivity (assets €13.4bn, Surplus VaR €1.42bn).")
 
 # ======================================================================== #
 #  KEY SELLING POINTS / RECOMMENDATIONS

@@ -21,18 +21,24 @@ python case3_model.py returnbook      # annual rebalance + 90/10 profit-share pr
 ## Return book: annual rebalancing + profit sharing (`return_book.py`)
 
 At each year end: grow each sleeve by its yearly return, add the contribution
-tranche (EUR 0.5bn), then **profit sharing** - 90 % of the yearly
-investment profit (return-driven, contributions excluded, with a loss
-carry-forward) is paid to policyholders, funded by **selling an equal EUR
-amount from every one of the 14 sleeves**; the retained 10 % stays invested.
-Then rebalance to the Aggressive Diversified target weights.
+tranche (EUR 0.5bn, years 1-10), then rebalance to the Aggressive Diversified
+weights.  **Profit sharing only from year 15** (`profit_share_start_year`, when
+benefits begin): years 1-14 the whole investment return compounds in the book,
+un-shared; from year 15 on, 90 % of each year's investment profit (return-driven,
+contributions excluded, loss carry-forward) is paid to policyholders - funded by
+**selling an equal EUR amount from every one of the 14 sleeves** - and 10 % is
+retained and left invested.
 
-Result over the 10y accumulation: contributions EUR 5.00bn -> return-book MV
-**EUR 5.26bn** (vs EUR 8.39bn with no profit share); cumulative policyholder
-share EUR 2.31bn, insurer retained EUR 0.26bn. The 90 % is a pass-through (off
-the insurer's asset side). `Config(return_book_mode="projected")` makes the VaR
-use this MV instead of the flat "10 x 0.5bn" sum (assets EUR 10.0 -> 10.26bn,
-Asset VaR ~2.65bn, Surplus VaR ~1.15bn).
+- **Deployed return-book size** (what `case3_model` uses when
+  `return_book_mode="projected"`): the **year-10, pre-sharing MV = EUR 8.39bn**
+  (contributions EUR 5.00bn fully compounded over the accumulation phase).
+- Payout phase (years 15-20, deterministic-return projection): cumulative
+  policyholder share ~EUR 7.8bn, insurer retained ~EUR 0.9bn, book ~EUR 13.6bn
+  at year 20.  The 90 % is a pass-through off the insurer's asset side.
+- `Config(return_book_mode="projected")`: assets EUR 10.0 -> **EUR 13.4bn**
+  (equity sleeve EUR 7.7bn), HS Asset VaR ~EUR 3.22bn, Surplus VaR ~EUR 1.42bn.
+  The default `return_book_mode="sum"` keeps the conservative flat "10 x 0.5bn"
+  = EUR 5.0bn return book for the headline VaR.
 
 ## Receive-fixed IRS overlay (`Config.irs_receiver`)
 
