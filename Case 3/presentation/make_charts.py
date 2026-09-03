@@ -246,6 +246,37 @@ def profit_share():
     _save(fig, "profit_share.png")
 
 
+def risk_drivers():
+    """Standalone 99% 1-year loss by driver (EUR m), on the hedged book, vs. the
+    diversified total surplus VaR.  Source: results_var/component_var_full_hedged.csv
+    + HS_REPORT_full_hedged.md (total surplus VaR)."""
+    d = (pd.read_csv(CASE / "results_var" / "component_var_full_hedged.csv",
+                     index_col=0)["hist_var_eur"] / 1e6)
+    d = d[d > 0.5].sort_values()
+    LAB = {"liability_pnl": "Guaranteed liability PV", "fi_bonds": "Fixed-income book",
+           "irs_hedge": "Receiver IRS overlay", "equity": "Equity (return portfolio)",
+           "fx_hedge_residual": "FX-hedge residual", "rates_credit_idx": "Rates / credit indices",
+           "high_yield": "High yield", "futures_overlay": "Equity-futures overlay"}
+    COL = {"liability_pnl": ORANGE, "fi_bonds": DTEAL, "irs_hedge": TEAL}
+    total_surplus_var = 845.3
+    names = [LAB.get(k, k) for k in d.index]
+    cols = [COL.get(k, TEALL) for k in d.index]
+    fig, ax = plt.subplots(figsize=(8.6, 4.6))
+    bars = ax.barh(names, d.values, color=cols, height=0.62)
+    for b, v in zip(bars, d.values):
+        ax.text(v + 45, b.get_y() + b.get_height() / 2, f"€{v/1000:.2f}bn",
+                va="center", fontsize=9, color=INK)
+    ax.axvline(total_surplus_var, color=RED, lw=1.8, ls=(0, (5, 3)))
+    ax.text(total_surplus_var + 130, 1.6,
+            f"diversified total\nsurplus VaR €{total_surplus_var/1000:.2f}bn",
+            fontsize=8.6, color=RED, va="center")
+    ax.set_xlabel("standalone 1-year 99% loss (EUR m)")
+    ax.set_xlim(0, 3350)
+    ax.set_title("Splitting the risk – standalone loss by driver vs. the netted total")
+    _style(ax)
+    _save(fig, "risk_drivers.png")
+
+
 def var_bridge():
     # from HS_REPORT_full_unhedged.md / HS_REPORT_full_irs.md  (1y 99% HS VaR, EUR m)
     # FI book = results_v2/portfolio_wide.csv (cash-flow-dedicated two-stage book)
@@ -350,6 +381,7 @@ if __name__ == "__main__":
     cf_cumulative()
     cf_match_fi()
     portfolio_composition()
+    risk_drivers()
     election()
     profit_share()
     var_bridge()
