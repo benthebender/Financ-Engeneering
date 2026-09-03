@@ -1,0 +1,105 @@
+==================================================
+DATA VALIDATION
+==================================================
+
+Valuation date: 2026-09-02
+
+FILES USED:
+- fixed_income: C:\Users\benlu\Financ-Engeneering\Financ-Engeneering\Case 3\Data\Fixed Income Basket.xlsx
+- eur_swaps: C:\Users\benlu\Financ-Engeneering\Financ-Engeneering\Case 3\Data\EUR SWAP CURVES 1-30yr.xlsx
+- pension: C:\Users\benlu\Financ-Engeneering\Financ-Engeneering\Case 3\Data\pension_liability_results.xlsx
+- usd_swaps: C:\Users\benlu\Financ-Engeneering\Financ-Engeneering\Case 3\Data\USD SWAP CURVE 1-30yr.xlsx
+- eurusd: C:\Users\benlu\Financ-Engeneering\Financ-Engeneering\Case 3\Data\EUR USD Rates.xlsx
+
+NORMALIZATION APPLIED:
+- EUR swap rates: raw / 10,000,000
+- USD swap rates: raw / 10,000,000
+- EURUSD spot: raw / 10,000
+- Bond prices: raw / 1,000 to price per 100 nominal
+- Bond coupons: already decimal in workbook
+- Bond maturity dates: parsed from instrument name, maturity-year cell used as validation
+
+DATE CORRECTIONS:
+- EUR swap 1Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 2Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 3Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 4Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 5Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 6Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 7Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 8Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 9Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 10Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 11Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 15Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 20Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 25Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- EUR swap 30Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- USD swap 1Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- USD swap 2Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- USD swap 3Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- USD swap 4Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- USD swap 5Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- USD swap 6Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- USD swap 10Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- USD swap 15Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- USD swap 20Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- USD swap 25Y row 2: 2026-02-09 -> 2026-09-02 using weekday We
+- ... 18 additional date corrections not shown
+
+EUR swap curve:
+raw 1Y = 306050
+normalized = 3.06%
+latest common EUR curve date = 2026-09-02
+curve method = annual par swap bootstrap with linear par-rate interpolation
+long-end extrapolation = flat_forward beyond 30Y
+
+USD curve loaded: YES
+USD raw 1Y = 416946
+USD normalized 1Y = 4.17%
+Used in EUR Fixed Income optimization: NO
+
+EURUSD loaded: YES
+latest EURUSD = 1.1590 on 2026-09-02
+Used in EUR Fixed Income optimization: NO
+
+Fixed Income:
+instruments found = 18
+instruments with usable prices = 16
+excluded =
+- RFGB 0 ⅛ 04/15/52 €: missing usable market price
+- EU 2 ½ 10/04/2052 REGS Corp: missing usable market price
+
+Example:
+DBR 2056
+coupon = 2.90%
+maturity = 2056-08-15
+market price = 83.408
+
+Pension:
+pension years = 35
+first age = 65
+final age = 99
+first pension projection year = 16
+final pension projection year = 50
+
+Pension PV validation at retirement:
+EUR 11.303bn
+validation difference = EUR 0.00m
+Excel discount factors used only for consistency check: YES
+Market valuation curve used for ALM: bootstrapped EUR swap curve
+
+Model horizon:
+50 years
+
+Long-tail liability visibility:
+Liability PV inside 0-30Y = EUR 5.676bn
+Liability PV beyond 30Y = EUR 0.737bn
+% of liability PV beyond 30Y = 11.49%
+
+Funding analysis:
+PV current assets = EUR 5.000bn
+PV future premiums = EUR 4.194bn
+PV benefit liabilities = EUR 6.413bn
+Net funding position = EUR 2.782bn
+==================================================

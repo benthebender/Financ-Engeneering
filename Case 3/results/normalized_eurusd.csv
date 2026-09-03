@@ -1,0 +1,2 @@
+quote_date,weekday,raw_quote,eurusd,normalization,used_in_eur_fixed_income_optimizer,source_file
+2026-09-02,We,11590.0,1.159,"raw / 10,000",False,EUR USD Rates.xlsx

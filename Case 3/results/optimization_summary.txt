@@ -1,0 +1,104 @@
+MODEL TYPE:
+Constrained Fixed-Income Asset-Liability Matching
+Quadratic Optimization
+
+DATA LABELS:
+Current assets and policyholder inputs: case/prototype assumptions
+Pension cash flows: actuarial Excel file supplied in the project
+Yield curve: EUR par swap Excel bootstrapped into discount factors, curve date 2026-09-02
+Bond market data: observed prices from Fixed Income Basket.xlsx
+USD curve and EURUSD: normalized but not used in EUR optimizer
+
+DECISION VARIABLES:
+EUR invested in each usable bond
+
+OBJECTIVE:
+Minimize cash-flow mismatch + DV01 mismatch + small investment-use/PV penalty
+
+FINAL OBJECTIVE ACTUALLY SOLVED:
+min_x sum_t(CF_A_t_bn - CF_L_t_bn)^2
+    + 150.0 * ((DV01_A_mn - DV01_L_mn) / DV01_L_mn)^2
+    + 8.0 * (PortfolioValue_bn - TargetInvestment_bn)^2
+
+OBJECTIVE COMPONENTS:
+Cash-flow component: 17.240905
+DV01 component: 17.599819
+Investment-use component: 0.000000
+Total objective: 34.840724
+
+CONSTRAINTS:
+x_i >= 0
+sum_i x_i <= EUR 5.000bn
+sum_i x_i >= 99.50% of available assets
+Gov + SSA + Covered >= 60.00% of invested portfolio
+IG corporate <= 30.00% of invested portfolio
+single instrument <= 15.00% of invested portfolio
+single issuer <= 15.00% of invested portfolio
+DV01_A within +/-35.00% of DV01_L
+
+SOLVER:
+CLARABEL
+
+STATUS:
+optimal
+
+OBJECTIVE VALUE:
+34.840724
+
+GUARANTEED ACCUMULATED VALUE AT YEAR 15:
+EUR 11.303bn
+
+LIABILITY PV:
+EUR 6.413bn
+
+LIABILITY DURATION:
+19.98 years
+
+LIABILITY DV01:
+EUR 12.81m per bp
+
+LIABILITY PV BEYOND 30Y:
+EUR 0.737bn
+
+PV CURRENT ASSETS:
+EUR 5.000bn
+
+PV FUTURE PREMIUMS:
+EUR 4.194bn
+
+PV BENEFIT LIABILITIES:
+EUR 6.413bn
+
+NET FUNDING POSITION:
+EUR 2.782bn
+
+PORTFOLIO VALUE:
+EUR 5.000bn
+
+PORTFOLIO YIELD:
+4.06%
+
+PORTFOLIO DURATION:
+16.84 years
+
+PORTFOLIO DV01:
+EUR 8.42m per bp
+
+DV01 GAP:
+DV01_A - DV01_L = EUR -4.39m per bp
+
+IRS HEDGE CANDIDATES:
+    direction  irs_tenor_years  irs_par_fixed_rate  irs_dv01_per_eur  irs_notional  residual_dv01_after_swap
+receive-fixed               15            0.035228          0.001188  3.694758e+09                       0.0
+receive-fixed               20            0.035514          0.001460  3.005914e+09                       0.0
+receive-fixed               25            0.035175          0.001698  2.584041e+09                       0.0
+receive-fixed               30            0.034601          0.001912  2.294700e+09                       0.0
+
+IRS NOTIONAL:
+Direction: receive-fixed
+Tenor: 20 years
+Selection basis: lowest residual total DV01, then closest tenor to liability duration
+Par fixed rate: 3.55%
+DV01 per EUR notional: 0.00145981
+Required notional: EUR 3.006bn
+Residual DV01 after swap: EUR 0.00m per bp
