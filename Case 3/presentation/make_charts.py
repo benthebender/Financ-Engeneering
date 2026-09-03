@@ -133,9 +133,10 @@ def profit_share():
 
 def var_bridge():
     # from HS_REPORT_full_unhedged.md / HS_REPORT_full_irs.md  (1y 99% HS VaR, EUR m)
+    # FI book = results_v2/portfolio_wide.csv (cash-flow-dedicated two-stage book)
     cats = ["Asset VaR\nunhedged", "Asset VaR\n+ receiver IRS",
             "Surplus VaR\nunhedged", "Surplus VaR\n+ receiver IRS"]
-    vals = [2590, 3533, 1136, 860]
+    vals = [2513, 3449, 1214, 845]
     cols = [TEAL, TEAL, ORANGE, ORANGE]
     fig, ax = plt.subplots(figsize=(9.6, 4.2))
     bars = ax.bar(cats, vals, 0.6, color=cols)
@@ -145,7 +146,7 @@ def var_bridge():
         ax.text(b.get_x() + b.get_width() / 2, v + 60, f"€{v/1000:.2f}bn", ha="center",
                 fontsize=10, color=INK)
     ax.set_ylabel("1-year 99% VaR (EUR m)")
-    ax.set_title("Historical-Simulation VaR – the receiver-IRS overlay cuts surplus risk 24%")
+    ax.set_title("Historical-Simulation VaR – the receiver-IRS overlay cuts surplus risk 30%")
     _style(ax)
     _save(fig, "var_bridge.png")
 

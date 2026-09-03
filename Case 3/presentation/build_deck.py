@@ -269,7 +269,7 @@ stat_tiles(s, 2.0, [
     ("The ask", "€5.0bn → ~€10bn", "100,000-policyholder book, contributions €0.5bn/yr for 10y, 15-year horizon"),
     ("The approach", "2 sleeves", "Liability-matching bond book + surplus-funded return portfolio, split re-struck yearly"),
     ("The result", "~6.0% p.a.", "Median 15-year IRR; even the 5th-pct path (2.9%) clears the 1.0% guarantee"),
-    ("The risk", "€0.86bn", "1-year 99% surplus VaR after the receiver-IRS overlay (€1.14bn before)"),
+    ("The risk", "€0.85bn", "1-year 99% surplus VaR after the receiver-IRS overlay (€1.21bn before)"),
 ], big_fs=17)
 box(s, 0.44, 4.30, 12.5, 1.15, fill=DTEAL)
 text(s, 0.72, 4.44, 12.0, 0.95,
@@ -652,15 +652,15 @@ s = content("Liability-Matching Portfolio – Bonds, Precisely Matched",
 banner(s, "How the match is built")
 image(s, "krd.png", 0.44, 1.95, 7.5)
 panel(s, 8.15, 1.95, 4.79, 4.5, "Four techniques", [
-    ("Cash-flow matching.  ", "Coupons + redemptions timed to the guaranteed schedule."),
-    ("Duration matching.  ", "Book duration ≈ liability (≈ 17y core → ≈ 29y with ultra-longs)."),
-    ("Key-rate DV01.  ", "Match € per bp at each tenor, not just average duration."),
+    ("Cash-flow dedication.  ", "Stage 1: running cash balance ≥ 0 every year (1.5% reinvestment) – external top-up €0.00bn, covered to year 50."),
+    ("Duration matching.  ", "≈ 29y KRD-effective, matched to the ≈ 20y / €12.8m-per-bp liability."),
+    ("Key-rate DV01.  ", "Stage 2: match € per bp at each tenor, without giving back Stage-1 coverage or duration."),
     ("Receiver-IRS overlay.  ", "Par swap, notional not exchanged – no cash. 15y €2.8bn + 30y €0.3bn closes the residual 15y gap."),
-], size=9.6)
+], size=9.4)
 kv_table(s, 0.44, 5.75, 7.5, [
-    ("Running yield ≈ 4.0%", "duration ≈ 17–29y", "surplus DV01 gap ≈ 0 after IRS"),
-], col1=0.34, rh=0.42, fs=10)
-note(s, "Sources: results/optimization_summary.txt; results_v2/REPORT.md; cashflow_match_v2.size_irs().")
+    ("11 bonds, ≈ €5.0bn", "KRD-eff. duration ≈ 29y", "cash-flow top-up €0.00bn; surplus DV01 gap ≈ 0 after IRS"),
+], col1=0.30, rh=0.42, fs=9.5)
+note(s, "Source: results_v2/portfolio_wide.csv (two-stage: Stage 1 cash-flow dedication, Stage 2 KRD shaping) + cashflow_match_v2.size_irs().")
 
 # ---- RSP detail --------------------------------------------------------- #
 s = content("Return-Seeking Portfolio – Equities for the Surplus",
@@ -735,7 +735,7 @@ s = content("Risk Quantification and Response",
             "For each risk: why it matters, how large it is, what we do", 4)
 banner(s, "Quantified (1-year, current book)")
 kv_table(s, 0.44, 2.0, 12.5, [
-    ("Rate / duration", "±100bp: LMP ≈ €1.1bn vs liability ≈ €1.2bn; surplus ≈ +€0.1bn after the ultra-long + IRS match", "Mitigate – duration + KRD + receiver IRS"),
+    ("Rate / duration", "±100bp: LMP ≈ €1.05bn vs liability ≈ €1.22bn; surplus swing ≈ €0.16bn with the KRD + IRS match (≈ €0.53bn without the IRS)", "Mitigate – cash-flow + KRD + receiver IRS"),
     ("Equity / market", "−30% equities ≈ −€1.41bn on the RSP – inside the €3.2bn economic surplus", "Accept – the deliberate risk budget"),
     ("FX", "USD sleeves swapped to EUR; residual is the 1y rate-differential on the hedge roll", "Mitigate – FX-swap the LMP; RSP partly unhedged as a diversifier"),
     ("Longevity / election", "25%→75% lump swing moves the year-15 need €2.8bn→€8.5bn; +1yr life exp ≈ +€0.27bn liability", "Mitigate via buffer sizing; reinsurance available"),
@@ -752,10 +752,10 @@ panel(s, 8.2, 1.95, 4.74, 2.35, "Method", [
     "Non-normality kept: empirical tails + a Student-t / Heston Monte-Carlo cross-check.",
 ], size=9.3)
 kv_table(s, 8.2, 4.45, 4.74, [
-    ("Asset VaR", "€2.59bn", "25.9% of assets"),
-    ("Surplus VaR (unhedged)", "€1.14bn", "16.7% of liab. PV"),
-    ("Surplus VaR (+ IRS)", "€0.86bn", "8.6% of assets"),
-    ("MC surplus VaR (t / Heston)", "€1.71bn", "fatter tails"),
+    ("Asset VaR", "€2.51bn", "25.1% of assets"),
+    ("Surplus VaR (unhedged)", "€1.21bn", "17.8% of liab. PV"),
+    ("Surplus VaR (+ IRS)", "€0.85bn", "8.5% of assets"),
+    ("MC surplus VaR (t / Heston)", "€1.81bn", "fatter tails"),
 ], col1=0.52, rh=0.42, fs=9)
 note(s, "Surplus P&L = ΔAssets − ΔLiability.  Source: results_var/HS_REPORT_full_*.md, MC_REPORT_mc_full.md.")
 
@@ -790,7 +790,7 @@ panel(s, 8.2, 1.95, 4.74, 4.5, "Reading the structure", [
     ("Years 1–10.  ", "€0.5bn/yr contributions fund the RSP; the LMP coupons accrue."),
     ("Year 15.  ", "the lump-sum spike – €5.65bn at 50/50 (€2.3–9.0bn across the election)."),
     ("Years 16–50.  ", "≈ €0.3bn/yr pension tail, decaying with mortality; 11% of PV beyond year 30."),
-    ("Coverage.  ", "bond redemptions front-load years 15 and 23–28; the tail is met by reinvested coupons + the return sleeve."),
+    ("Coverage.  ", "Stage-1 dedication keeps the running cash balance ≥ 0 every year to year 50 – no external top-up; ultra-long / zero-coupon bonds reach the 30y+ tail."),
 ], size=9.2)
 
 # ---- 6b  Flows in every scenario ------------------------------------- #
@@ -844,7 +844,7 @@ panel(s, 0.44, 1.95, 6.25, 4.55, "What we propose", [
 panel(s, 6.85, 1.95, 6.09, 4.55, "Why it wins the mandate", [
     ("Floor is safe.  ", "€11.3bn guarantee covered even on the 0.5th-percentile 15-year path; P(underfunded) < 0.6%."),
     ("Upside is real.  ", "median 15-year IRR ≈ 6.0% – ≈ 500bps above the 1.0% guarantee; 90% shared with policyholders."),
-    ("Risk is controlled.  ", "1-year 99% surplus VaR €0.86bn after the overlay (−24%); every stress inside the surplus."),
+    ("Risk is controlled.  ", "1-year 99% surplus VaR €0.85bn after the overlay (−30%); every stress inside the €3.2bn surplus."),
     ("IAS-defensible.  ", "duration + KRD matched, so LMP mark-to-market offsets the liability; low turnover."),
     ("Fully compliant.  ", "Solvency II capital and BaFin AnlV limits built into construction and reporting."),
 ], size=9.4)

@@ -1,9 +1,12 @@
 # `case3_model.py` - one unified Case 3b model
 
 Merges the logic of `case3_var.py` + `montecarlo.py` + `vix.py` + `futures.py`
-+ `fx.py` into a single self-contained file. Consumes the two teammate outputs
-(`results/fixed_income_portfolio.csv`, `portfolio_optimization_final.xlsx`) and
-does everything downstream.
++ `fx.py` into a single self-contained file. Consumes
+`results_v2/portfolio_wide.csv` (the cash-flow-dedicated two-stage FI book from
+`cashflow_match_v2.py` - Stage 1 dedicates the cash flows, Stage 2 shapes the
+key-rate DV01) and `portfolio_optimization_final.xlsx` (return-book weights), and
+does everything downstream.  (The older `results/fixed_income_portfolio.csv` from
+`alm_fixed_income_.py` is a soft-CF + DV01 least-squares book, not dedicated.)
 
 ```bash
 python case3_model.py                 # HS suite (unhedged / overlay / t0 / projected) + MC
@@ -42,11 +45,11 @@ bond book (only variation margin).  `irs_receiver_mtm()` reprices the swap MTM,
 `N * (s0 * A - (1 - DF(T)))`, on every HS scenario / MC path / stress curve and
 adds it to asset P&L (`irs_hedge` component).  The notional per tenor is sized
 by `cashflow_match_v2.size_irs()` (NNLS of receiver-swap key-rate DV01 onto the
-Stage-2 residual gap).  Effect (full deployment HS, unhedged equity): Surplus
-VaR EUR 1,136m -> **EUR 860m** (-24 %); Asset VaR EUR 2,590m -> 3,533m (up, as
-expected - the swap adds rate duration on the asset side, which does not
-threaten the cash-flow match); 2008-replay surplus EUR -3,211m -> **-2,535m**.
-`run_all()` emits it as the `full_irs` tag.
+Stage-2 residual gap).  Effect (full deployment HS, unhedged equity, on the
+cash-flow-dedicated FI book): Surplus VaR EUR 1,214m -> **EUR 845m** (-30 %);
+Asset VaR EUR 2,513m -> 3,449m (up, as expected - the swap adds rate duration on
+the asset side, which does not threaten the cash-flow match); 2008-replay
+surplus EUR -3,279m -> **-2,603m**.  `run_all()` emits it as the `full_irs` tag.
 
 ## Structure (16 sections, top to bottom)
 
@@ -56,7 +59,7 @@ threaten the cash-flow match); 2008-replay surplus EUR -3,211m -> **-2,535m**.
 | 2 | **Data loading** | Bloomberg-Excel EUR/USD swap-curve & EURUSD history (weekday date repair, raw/1e7 & raw/1e4), 14-index weekly history, return weights, FI portfolio CSV |
 | 3 | **Curve** | annual par-swap bootstrap → zero curve; log-linear DF; flat-forward beyond 30y |
 | 4 | **Guaranteed liability** | accumulated value at yr 15 (`50k·1.01^15 + Σ 5k·1.01^(15-t)`)×100k; CF = **50% lump @ yr15 + 50% pension yr16..50** |
-| 5 | **Book assembly** | FI 5.0bn (16 bonds) + return book = 10×€0.5bn at Aggressive_Diversified; sleeve currency/kind tags (EUR vs USD; EQUITY / HY / RATES_CREDIT) |
+| 5 | **Book assembly** | FI 5.0bn (11 bonds, cash-flow-dedicated `results_v2/portfolio_wide.csv`) + return book = 10×€0.5bn at Aggressive_Diversified; sleeve currency/kind tags (EUR vs USD; EQUITY / HY / RATES_CREDIT) |
 | 6 | **FX swap** | CIP forward, hedge carry, rate-diff coefficient — every USD sleeve rolled to EUR (HKD leg ignored) |
 | 7 | **Equity-index future** | cost-of-carry `F = S·e^{(r−q)τ}`, MTM, carry, `hedge_contracts()` = `−ratio·β·EquityMV/(price·mult)` (short) |
 | 8 | **VIX / Heston** | `dv = κ(θ−v)dt + ξ√v dW^v`, `corr(dW^S,dW^v)=ρ`; analytic `VIX_t² = (A(τ)v_t + (1−A)θ)·100²`, `A(τ)=(1−e^{−κτ})/(κτ)`; weekly full-truncation Euler |
@@ -74,14 +77,15 @@ threaten the cash-flow match); 2008-replay surplus EUR -3,211m -> **-2,535m**.
 - **Asset VaR** (asset P&L) and **Surplus VaR** (assets − guaranteed liability PV), 1-year 99%, HS + MC + parametric
 - driver decomposition, deterministic stresses, the overlay decision (limit, unhedged equity VaR, hedge ratio), VIX diagnostics
 
-## Headline (full deployment, €10.0bn, valuation 2026-09-02)
+## Headline (full deployment, €10.0bn, valuation 2026-09-02, CF-dedicated FI book)
 
 | | HS | MC (Student-t 5 + Heston VIX) |
 |---|--:|--:|
-| Asset VaR | €2.54bn | €2.40bn |
-| Surplus VaR | €1.13bn | €1.71bn |
-| equity VaR limit / unhedged equity VaR | €0.91bn / €0.96bn | €0.31bn / €1.41bn |
-| → futures hedge ratio | ~6% (in band ⇒ ~0) | ~78% |
+| Asset VaR | €2.51bn | €2.29bn |
+| Surplus VaR (unhedged) | €1.21bn | €1.81bn |
+| Surplus VaR (+ receiver IRS) | €0.85bn | - |
+| equity VaR limit / unhedged equity VaR | €0.83bn / €0.96bn | €0.21bn / €1.44bn |
+| → futures hedge ratio | ~14% | ~85% |
 
 The old five modules still work and are unchanged; `case3_model.py` supersedes
 them as the single entry point.

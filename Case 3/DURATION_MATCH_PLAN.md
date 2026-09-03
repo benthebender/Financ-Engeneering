@@ -86,15 +86,21 @@ irs_receiver=((15.0, 2.8e9), (30.0, 0.3e9)))` carries it into the VaR engine
 (`irs_receiver_mtm()` reprices the swap MTM on every scenario / stress curve and
 adds it to asset P&L).
 
-Effect on the 1y 99% HS VaR (full deployment, unhedged equity):
+Effect on the 1y 99% HS VaR (full deployment, unhedged equity, on the
+cash-flow-dedicated FI book `results_v2/portfolio_wide.csv`):
 
 | | no IRS | + receiver overlay |
 |---|--:|--:|
-| **Surplus VaR** | EUR 1,136m | **EUR 860m** (-24%) |
-| Asset VaR | EUR 2,590m | EUR 3,533m (+36%, expected - the swap adds rate duration to the asset side) |
-| non-equity surplus VaR | EUR 916m | EUR 424m |
-| stress: EUR rates -100bp (surplus) | EUR -634m | **EUR -201m** |
-| stress: 2008 replay (surplus) | EUR -3,211m | **EUR -2,535m** |
+| **Surplus VaR** | EUR 1,214m | **EUR 845m** (-30%) |
+| Asset VaR | EUR 2,513m | EUR 3,449m (+37%, expected - the swap adds rate duration to the asset side) |
+| non-equity surplus VaR | EUR 996m | EUR 501m |
+| stress: EUR rates -100bp (surplus) | EUR -678m | **EUR -245m** |
+| stress: 2008 replay (surplus) | EUR -3,279m | **EUR -2,603m** |
+
+(The older non-dedicated book gave EUR 1,136m -> 860m; the dedicated book runs
+~EUR 80m more surplus VaR before the IRS - it is longer-duration, so a larger
+gross MTM rate position - but the IRS closes that back to the same place while
+the cash flows are now genuinely dedicated to year 50 with no external top-up.)
 
 The overlay is deliberately sized to the *surplus* risk, not to flatten asset
 DV01 - it trades a larger book-value swing on the asset side (which does not

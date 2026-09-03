@@ -61,7 +61,12 @@ warnings.filterwarnings("ignore")
 HERE = Path(__file__).resolve().parent
 DATA = HERE / "Data"
 OUT = HERE / "results_var"
-FI_PORTFOLIO_CSV = HERE / "results" / "fixed_income_portfolio.csv"
+#   results_v2/portfolio_wide.csv = cashflow_match_v2.py two-stage book:
+#   Stage 1 dedicates the cash flows (running balance >= 0, min external top-up),
+#   Stage 2 shapes the key-rate DV01 without giving back coverage or duration.
+#   (results/fixed_income_portfolio.csv = the older soft-CF + DV01 least-squares
+#    book from alm_fixed_income_.py - not cash-flow dedicated.)
+FI_PORTFOLIO_CSV = HERE / "results_v2" / "portfolio_wide.csv"
 RETURN_XLSX = HERE / "portfolio_optimization_final.xlsx"
 
 EUR_BN = 1e9

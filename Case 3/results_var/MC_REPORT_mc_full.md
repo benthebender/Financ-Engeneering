@@ -3,14 +3,14 @@
 25,000 paths x 52 weekly Student-t (dof 5) steps, PCA curve, Heston stochastic vol + leverage. Book repriced with the HS engine.
 
 - assets EUR 10.00bn | liability PV EUR 6.81bn | economic surplus EUR 3.19bn
-- equity 99% 1y VaR limit EUR 316m | unhedged equity VaR EUR 1,441m -> hedge 78.1%
+- equity 99% 1y VaR limit EUR 210m | unhedged equity VaR EUR 1,441m -> hedge 85.4%
 
 ## MC VaR / ES (1-year, EUR)
 
 | model | Asset VaR | Asset ES | Surplus VaR | Surplus ES |
 |---|--:|--:|--:|--:|
-| student_t_nu5 | 2,412.9m | 2,564.3m | 1,707.6m | 1,836.3m |
-| gaussian | 2,398.6m | 2,556.1m | 1,715.3m | 1,852.0m |
+| student_t_nu5 | 2,293.2m | 2,433.3m | 1,805.1m | 1,930.4m |
+| gaussian | 2,290.1m | 2,425.9m | 1,812.8m | 1,936.8m |
 
 ## VIX (Heston kappa 4.0, theta 0.028, xi 0.65, rho -0.75)
 
