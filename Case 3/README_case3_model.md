@@ -9,23 +9,23 @@ does everything downstream.
 python case3_model.py                 # HS suite (unhedged / overlay / t0 / projected) + MC
 python case3_model.py hs full auto    # one HS run, rule-based hedge
 python case3_model.py hs full 0.30    # one HS run, hedge pinned at 30%
-python case3_model.py hs full auto projected   # return book from the semi-annual path
+python case3_model.py hs full auto projected   # return book from the annual profit-share path
 python case3_model.py mc full 25000   # Monte-Carlo, 25k paths
-python case3_model.py returnbook      # semi-annual rebalance + 90/10 profit-share projection
+python case3_model.py returnbook      # annual rebalance + 90/10 profit-share projection
 ```
 
-## Return book: semi-annual rebalancing + profit sharing (`return_book.py`)
+## Return book: annual rebalancing + profit sharing (`return_book.py`)
 
-Every 6 months: grow each sleeve by its half-year return, add the contribution
-tranche (EUR 0.25bn), then **profit sharing** - 90 % of the half-year
+At each year end: grow each sleeve by its yearly return, add the contribution
+tranche (EUR 0.5bn), then **profit sharing** - 90 % of the yearly
 investment profit (return-driven, contributions excluded, with a loss
 carry-forward) is paid to policyholders, funded by **selling an equal EUR
 amount from every one of the 14 sleeves**; the retained 10 % stays invested.
 Then rebalance to the Aggressive Diversified target weights.
 
 Result over the 10y accumulation: contributions EUR 5.00bn -> return-book MV
-**EUR 5.26bn** (vs EUR 8.58bn with no profit share); cumulative policyholder
-share EUR 2.36bn, insurer retained EUR 0.26bn. The 90 % is a pass-through (off
+**EUR 5.26bn** (vs EUR 8.39bn with no profit share); cumulative policyholder
+share EUR 2.31bn, insurer retained EUR 0.26bn. The 90 % is a pass-through (off
 the insurer's asset side). `Config(return_book_mode="projected")` makes the VaR
 use this MV instead of the flat "10 x 0.5bn" sum (assets EUR 10.0 -> 10.26bn,
 Asset VaR ~2.65bn, Surplus VaR ~1.15bn).
