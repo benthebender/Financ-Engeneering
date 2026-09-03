@@ -86,6 +86,12 @@ class Config:
     contribution_per_year_eur: float = 0.5 * EUR_BN
     contribution_years: int = 10          # t=1..10 -> Return book
     return_weight_set: str = "Aggressive_Diversified"
+    # return-book size: "sum" = contributions paid in (10 x 0.5bn); "projected"
+    # = MV after the semi-annual rebalance + 90/10 profit-sharing path
+    # (return_book.py)
+    return_book_mode: str = "sum"
+    rebalance_per_year: int = 2
+    profit_share_policyholder: float = 0.90
 
     # --- guaranteed liability (IAS) ---
     guaranteed_rate: float = 0.01
@@ -282,6 +288,14 @@ def build_book(cfg: Config) -> Book:
     weights = load_return_weights(cfg)
     idx_hist = load_index_history()
     rb = cfg.return_book_eur                             # t=1..10: 10 x 0.5bn
+    if cfg.return_book_mode == "projected" and cfg.deployment != "t0":
+        from return_book import RBConfig, projected_book_mv
+        rb = projected_book_mv(RBConfig(
+            contribution_per_year_eur=cfg.contribution_per_year_eur,
+            contribution_years=cfg.contribution_years,
+            rebalance_per_year=cfg.rebalance_per_year,
+            profit_share_policyholder=cfg.profit_share_policyholder,
+            weight_set=cfg.return_weight_set))
     rows = []
     for name, w in weights.items():
         if name not in idx_hist.columns:
@@ -1010,6 +1024,8 @@ def run_all(mc_paths: int = 25_000) -> None:
     run_hs(Config(deployment="full", future_hedge_ratio=0.0), tag="full_unhedged")
     run_hs(Config(deployment="full"), tag="full_overlay")
     run_hs(Config(deployment="t0", future_hedge_ratio=0.0), tag="t0_inception")
+    run_hs(Config(deployment="full", return_book_mode="projected",
+                  future_hedge_ratio=0.0), tag="full_projected")   # semi-annual
     run_mc(Config(deployment="full"), n_paths=mc_paths, tag="mc_full")
 
 
@@ -1019,9 +1035,16 @@ if __name__ == "__main__":
         run_all()
     elif a[0] == "hs":
         h = None if len(a) <= 2 or a[2] == "auto" else float(a[2])
-        run_hs(Config(deployment=a[1] if len(a) > 1 else "full", future_hedge_ratio=h))
+        mode = "projected" if "projected" in a[3:] else "sum"
+        run_hs(Config(deployment=a[1] if len(a) > 1 else "full",
+                      future_hedge_ratio=h, return_book_mode=mode))
     elif a[0] == "mc":
-        run_mc(Config(deployment=a[1] if len(a) > 1 else "full"),
-               n_paths=int(a[2]) if len(a) > 2 else 20_000)
+        mode = "projected" if "projected" in a[3:] else "sum"
+        run_mc(Config(deployment=a[1] if len(a) > 1 else "full",
+                      return_book_mode=mode),
+               n_paths=int(a[2]) if len(a) > 2 and a[2].isdigit() else 20_000)
+    elif a[0] == "returnbook":
+        from return_book import RBConfig, project, _report_and_chart
+        _report_and_chart(project(RBConfig()), RBConfig())
     else:
         run_all()
