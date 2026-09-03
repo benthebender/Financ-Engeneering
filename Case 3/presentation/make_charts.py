@@ -90,6 +90,49 @@ def cf_cumulative():
     _save(fig, "cf_cumulative.png")
 
 
+def cf_match_fi(reinv: float = 0.015):
+    """Cash-flow matching of the held (50/50) two-stage FI book:
+    annual asset vs liability cash flow, and the running cash balance that
+    Stage-1 dedication keeps >= 0 every year (no external top-up).
+    Source: results_v2/book_cf_wide.csv (cashflow_match_v2.run())."""
+    d = pd.read_csv(CASE / "results_v2" / "book_cf_wide.csv")
+    d = d[d["year"] <= 50]
+    yr = d["year"].to_numpy()
+    a = d["asset_cf_eur"].to_numpy() / 1e9
+    l = d["liability_cf_eur"].to_numpy() / 1e9
+    bal, run = 0.0, []
+    for ai, li in zip(a, l):
+        bal = bal * (1.0 + reinv) + ai - li
+        run.append(bal)
+    run = np.array(run)
+
+    fig, ax = plt.subplots(2, 1, figsize=(9.6, 6.2), sharex=True,
+                           gridspec_kw={"height_ratios": [1.35, 1]})
+    ax[0].bar(yr - 0.2, a, 0.4, color=TEAL, label="FI book cash flow (coupons + redemptions)")
+    ax[0].bar(yr + 0.2, l, 0.4, color=ORANGE, label="guaranteed liability cash flow")
+    ax[0].axvspan(0.5, 10.5, color=TEALL, alpha=0.25, lw=0)
+    ax[0].annotate(f"year-15 lump  €{l[yr==15][0]:.2f}bn", xy=(15, l[yr == 15][0]),
+                   xytext=(19, l[yr == 15][0] * 0.86), fontsize=9, color=INK,
+                   arrowprops=dict(arrowstyle="-", color="#8AA0A6", lw=0.9))
+    ax[0].set_ylabel("EUR bn / year")
+    ax[0].set_title("Fixed-Income cash-flow matching – held book (50 % lump / 50 % pension)")
+    ax[0].legend(frameon=False, fontsize=9.5, loc="upper right")
+    _style(ax[0])
+
+    ax[1].fill_between(yr, 0, run, color=TEALL, alpha=0.75)
+    ax[1].plot(yr, run, color=DTEAL, lw=2.2)
+    ax[1].axhline(0, color="#8AA0A6", lw=1)
+    touch = yr[run < 0.05]
+    ax[1].scatter(touch, run[run < 0.05], color=ORANGE, s=26, zorder=5)
+    ax[1].text(1, ax[1].get_ylim()[1] * 0.86,
+               "running cash balance stays ≥ 0 every year  →  no external top-up",
+               fontsize=9, color=DTEAL)
+    ax[1].set_xlabel("projection year")
+    ax[1].set_ylabel("running balance (EUR bn)\n1.5 % reinvestment")
+    _style(ax[1])
+    _save(fig, "cf_match_fi.png")
+
+
 def election():
     d = pd.read_excel(CASE / "mixed_liability_scenarios.xlsx", sheet_name="Scenario Summary")
     lab = [f"{int(p)}%" for p in d["Lump_Sum_%"]]
