@@ -123,7 +123,11 @@ def parse_basket_5col(path: Path) -> pd.DataFrame:
     return df[(df["years_to_maturity"] > 1.0) & (df["market_price_per_100"] > 1.0)]
 
 
-def load_inputs(with_zcb: bool = True) -> "tuple[pd.DataFrame, pd.DataFrame, pd.Series]":
+def load_inputs(with_zcb: bool = True, lump_share: float = 0.50
+                ) -> "tuple[pd.DataFrame, pd.DataFrame, pd.Series]":
+    """`lump_share` = fraction of policyholders taking the year-15 lump sum
+    (the rest take the pension).  Drives which liability schedule the FI book is
+    matched to."""
     a, dc = alm.Assumptions(), []
     base = parse_basket_5col(alm.resolve_input_file(alm.INPUT_FILENAMES["fixed_income"]))
     if with_zcb:
@@ -134,7 +138,8 @@ def load_inputs(with_zcb: bool = True) -> "tuple[pd.DataFrame, pd.DataFrame, pd.
         uni = base
     _, _, curve, _ = alm.normalize_swap_curve(
         alm.resolve_input_file(alm.INPUT_FILENAMES["eur_swaps"]), "EUR", a, dc)
-    liab = m.liability_cashflows(m.Config())
+    liab = m.liability_cashflows(m.Config(lump_sum_share=float(lump_share),
+                                         pension_share=1.0 - float(lump_share)))
     return uni, curve, liab
 
 
@@ -397,6 +402,12 @@ def run() -> None:
         tag = "base" if "only" in name else "wide"
         _portfolio_frame(u, x2, M).to_csv(OUT / f"portfolio_{tag}.csv", index=False)
         krd.to_csv(OUT / f"krd_{tag}.csv", index=False)
+        if tag == "wide":                                   # the book we actually hold
+            yrs = M["yrs"].astype(int)
+            pd.DataFrame({"year": yrs,
+                          "asset_cf_eur": (M["cf"].T @ x2) * BN,
+                          "liability_cf_eur": M["Lvec"] * BN}).to_csv(
+                OUT / "book_cf_wide.csv", index=False)
 
         A(f"## {name}  ({len(u)} bonds, {(u['coupon'] == 0).sum()} zero-coupon, "
           f"longest {u['years_to_maturity'].max():.0f}y)\n")
@@ -472,6 +483,87 @@ def _write(path: Path, lines: list) -> None:
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
+# --------------------------------------------------------------------------- #
+#  Election sensitivity - rerun the two-stage FI pipeline for each lump-sum
+#  election so we know (a) the bond book each pension-plan demand actually
+#  needs and (b) how much of the 50/50 book is freed when the tail shrinks.
+# --------------------------------------------------------------------------- #
+def run_elections(shares=(0.0, 0.25, 0.50, 0.75, 1.00)) -> None:
+    OUT.mkdir(exist_ok=True)
+    (OUT / "elections").mkdir(exist_ok=True)
+    _, curve, _ = load_inputs()
+    uni = load_inputs(with_zcb=True)[0]
+
+    import gc
+    rows, alloc, cf15, pv15 = [], {}, {}, {}
+    for s in shares:
+        # only the liability schedule changes per election - do not re-read the
+        # bond / curve workbooks (keeps the run inside the process memory cap)
+        liab_s = m.liability_cashflows(m.Config(lump_sum_share=float(s),
+                                                pension_share=1.0 - float(s)))
+        M = build_matrices(uni, curve, liab_s)
+        _, _, x2, s2, _, st2 = _solve_two_stage(M)
+        pf = _portfolio_frame(uni, x2, M)
+        pf.to_csv(OUT / "elections" / f"portfolio_s{int(round(s*100)):03d}.csv", index=False)
+
+        acf = (M["cf"].T @ x2) * BN                       # asset CF by year (EUR)
+        lcf = M["Lvec"] * BN                              # liability CF by year (EUR)
+        df15 = M["dfs"][14]                               # DF(15)
+        tail_pv15 = float((lcf[15:] * M["dfs"][15:] / df15).sum())   # PV at yr15 of the >15 tail
+        alloc[s] = pf.set_index("instrument")["eur_allocation"]
+        cf15[s], pv15[s] = float(acf[14]), tail_pv15
+        rows.append(dict(
+            lump_pct=int(round(s * 100)), mv_bn=float(M["price"] @ x2),
+            eff_dur=st2["eff_dur"], convexity=st2["cvx"],
+            dv01_asset_m=st2["dv01_asset"] / 1e6, dv01_gap_m=st2["dv01_gap"] / 1e6,
+            topup_pv_bn=st2["topup_pv"] / 1e9,
+            liab_pv_bn=M["liab_pv"], liab_dur=M["liab_dur"],
+            yr15_liab_cf_bn=float(lcf[14] / 1e9), yr15_asset_cf_bn=float(acf[14] / 1e9),
+            tail_pv15_bn=tail_pv15 / 1e9))
+        del M, x2, s2, st2, pf, acf, lcf
+        gc.collect()
+    df = pd.DataFrame(rows).set_index("lump_pct")
+    df.round(3).to_csv(OUT / "elections" / "summary.csv")
+
+    # --- what happens if we HOLD the 50/50 book and the election turns out > 50%
+    # Stage-1 dedication guarantees the 50/50 book delivers its full year-15
+    # obligation (the 50% lump) out of accumulated cash + reinvestment - that is
+    # risk-free.  Above 50%, the bonds it no longer needs for the shrunk pension
+    # tail can be sold at the year-15 market price toward the larger lump.
+    held_dedicated = float(m.liability_cashflows(m.Config())[15])   # 50% lump  ~ EUR 5.65bn
+    held_tail_pv15 = pv15[0.50]                                     # PV@15 of the 50/50 tail
+    L = ["# Case 3b - FI book by policyholder election  (two-stage pipeline rerun)\n",
+         "Full `cashflow_match_v2` two-stage optimise (cash-flow dedication + KRD "
+         "shaping, +ZCB / ultra-long universe) rerun for each year-15 lump-sum "
+         "election.  All books spend the EUR 5.0bn budget.\n",
+         df.round(2).to_markdown(), "",
+         "## Holding the 50/50 book into a higher lump-sum election\n",
+         f"The book we hold is matched to 50/50 - it delivers EUR "
+         f"{held_dedicated/1e9:.2f}bn at year 15 by dedication (risk-free).  If "
+         f"more than half elect the lump, the bonds it no longer needs for the "
+         f"(now smaller) pension tail are sold at the year-15 market price toward "
+         f"the larger lump; only the remainder must come from the RSP.\n",
+         "| election | year-15 lump demand | dedicated (risk-free) | freed tail PV (sold at mkt) | still needed from the RSP |",
+         "|---|--:|--:|--:|--:|"]
+    for s in shares:
+        lcf_s = m.liability_cashflows(m.Config(lump_sum_share=s, pension_share=1 - s))
+        need = float(lcf_s.get(15, 0.0))
+        freed = max(0.0, held_tail_pv15 - pv15[s])
+        resid = max(0.0, need - held_dedicated - freed)
+        L.append(f"| {int(round(s*100))}% lump | EUR {need/1e9:.2f}bn | "
+                 f"EUR {min(need, held_dedicated)/1e9:.2f}bn | EUR {freed/1e9:.2f}bn | "
+                 f"**EUR {resid/1e9:.2f}bn** |")
+    L += ["",
+          f"Freed tail PV is valued at the year-15 curve, so it carries rate risk; "
+          f"the residual is what must come from selling the Return-Seeking "
+          f"Portfolio at market.  `mc_lifecycle.py` uses `dedicated` "
+          f"(EUR {held_dedicated/1e9:.2f}bn) and the freed-tail PV for the "
+          f"year-15 liquidity metric."]
+    _write(OUT / "elections" / "ELECTIONS_REPORT.md", L)
+    print("\n".join(L))
+    print(f"\nwrote {OUT}/elections/ : summary.csv, portfolio_s***.csv, ELECTIONS_REPORT.md")
+
+
 def _chart(M, x2, krd):
     import matplotlib
     matplotlib.use("Agg")
@@ -505,4 +597,8 @@ def _chart(M, x2, krd):
 
 
 if __name__ == "__main__":
-    run()
+    import sys
+    if len(sys.argv) > 1 and sys.argv[1] == "elections":
+        run_elections()
+    else:
+        run()

@@ -51,6 +51,9 @@ FI_CARRY = 0.039             # running yield of results_v2/portfolio_wide.csv (c
 FI_RATE_VOL = 0.0075         # annual EUR rate shock, 1 s.d.
 FI_MTM_DAMP = 0.45           # held to fund CFs -> only part of the MTM swing is "realised"
 FI_RSP_CORR = 0.15
+FI_MOD_DUR = 15.33           # MV-weighted modified duration of the 50/50 book
+D_FREED = 12.0               # effective duration (from yr 15) of the freed pension-tail bonds
+ELECTIONS_CSV = HERE / "results_v2" / "elections" / "summary.csv"
 
 NAVY, DTEAL, TEAL, TEALL = "#12323F", "#1F4E5F", "#3B8E9E", "#8FBFC8"
 ORANGE, GREEN, RED, GRID, INK = "#C85A2B", "#2E7D4F", "#B4322B", "#DCE4E7", "#333333"
@@ -92,6 +95,14 @@ def _inputs():
     return sl, tw, mu_a, cov_a, liab
 
 
+def _freed_tail_base():
+    """PV at year 15 of the 50/50 book's pension-tail bonds that become sellable
+    at each higher lump-sum election = tail_pv15(50%) - tail_pv15(s).
+    Source: cashflow_match_v2.run_elections() -> results_v2/elections/summary.csv."""
+    d = pd.read_csv(ELECTIONS_CSV).set_index("lump_pct")["tail_pv15_bn"] * 1e9
+    return {int(k): max(0.0, float(d.get(50, 0.0) - d.get(k, 0.0))) for k in (0, 25, 50, 75, 100)}
+
+
 def simulate():
     sl, tw, mu_a, cov_a, liab = _inputs()
     n = len(sl)
@@ -113,6 +124,12 @@ def simulate():
     r = mu + z / np.sqrt(g)                               # simple annual returns
     r_sleeves, r_fi = r[:, :, :n], r[:, :, n]
     r_rsp = r_sleeves @ tw                                # rebalanced-to-target each year
+
+    # annual EUR rate change implied by the FI book's MTM move (r - carry ~
+    # -DAMP*D*dz), then cumulative change to year 15 - used to value the freed
+    # pension-tail bonds at the year-15 curve
+    dz = -(r_fi - FI_CARRY) / (FI_MTM_DAMP * FI_MOD_DUR)
+    dy15 = dz[:, :15].sum(axis=1)
 
     # ---- roll the two sleeves forward -----------------------------------
     lmp = np.full(N_SIM, FI_EUR)
@@ -142,7 +159,7 @@ def simulate():
     irr = _irr_vec(cf, a15, HORIZON)
 
     return dict(sl=sl, liab=liab, paths=paths, ann=ann, irr=irr, a15=a15,
-                lmp15=lmp15, rsp15=rsp15, r_rsp=r_rsp, r_fi=r_fi)
+                lmp15=lmp15, rsp15=rsp15, dy15=dy15, r_rsp=r_rsp, r_fi=r_fi)
 
 
 def _irr_vec(cf_wo_terminal, terminal, T, lo=-0.5, hi=1.0, iters=80):
@@ -238,61 +255,75 @@ def charts(res):
     _style(ax); _save(fig, "lc_05_funding_ratio_distribution.png")
 
     # 06 - policyholder-choice sensitivity ------------------------
-    # The FI book is cash-flow-dedicated to the 50/50 schedule, so it delivers
-    # its year-15 slice (LUMP50) by contract - risk-free, whatever rates do.
-    # A liquidity shortfall can only arise ABOVE the matched 50% election, when
-    # the excess lump demand must be raised by selling the RSP at market.
-    rsp15 = res["rsp15"]
+    # The FI book is dedicated to the 50/50 schedule: it delivers LUMP50 at
+    # year 15 by dedication (risk-free).  Above 50% the bonds it no longer needs
+    # for the shrunk pension tail are SOLD at the year-15 market price (rate risk
+    # via dy15); only the remainder must come from selling the RSP.
+    rsp15, dy15 = res["rsp15"], res["dy15"]
     LUMP50 = float(liab.loc[50.0, "Lump_Sum_at_Year15"])       # dedicated yr-15 delivery
+    freed0 = _freed_tail_base()                                # {lump_pct: EUR base PV@15}
+    rate_fac = np.clip(1.0 - D_FREED * dy15, 0.0, None)        # freed-bond MtM factor per path
     shares = [0.0, 25.0, 50.0, 75.0, 100.0]
     under, liq = [], []
     for s in shares:
         Ls = float(liab.loc[s, "Total_Liability_Year15"])
         lump = float(liab.loc[s, "Lump_Sum_at_Year15"])
-        excess = max(0.0, lump - LUMP50)                       # must come from the RSP
+        excess = max(0.0, lump - LUMP50)
+        freed_path = freed0[int(s)] * rate_fac                 # freed FI tail bonds at mkt
         under.append(np.mean(a15 < Ls) * 100)
-        liq.append(np.mean(rsp15 < excess) * 100 if excess > 0 else 0.0)
+        liq.append(np.mean(freed_path + rsp15 < excess) * 100 if excess > 0 else 0.0)
     fig, ax = plt.subplots(figsize=(9.6, 4.6))
-    ax.plot(shares, under, color=DTEAL, lw=2.4, marker="o", ms=7, label="underfunding probability (assets < liability, MtM)")
+    ax.plot(shares, under, color=DTEAL, lw=2.4, marker="o", ms=7,
+            label="underfunding probability (total assets < liability, MtM)")
     ax.plot(shares, liq, color=ORANGE, lw=2.4, marker="s", ms=7,
-            label="liquidity-shortfall probability (excess lump not coverable by the RSP)")
+            label="liquidity-shortfall probability (dedicated + freed FI bonds + RSP < lump)")
     ax.axvline(50, color="#8AA0A6", lw=1, ls=":")
-    ax.text(51, ax.get_ylim()[1] * 0.9, "matched election\n(dedicated LMP covers the lump)",
-            fontsize=8.5, color="#5A6B70")
+    ax.text(48.5, ax.get_ylim()[1] * 0.30, "matched election →", fontsize=8.5,
+            color="#5A6B70", ha="right")
     ax.set_xlabel("policyholders electing the lump sum (%)")
     ax.set_ylabel("probability (%)")
-    ax.set_title("Policyholder-choice sensitivity – liquidity risk only above the matched 50%")
-    ax.legend(frameon=False, fontsize=8.8)
+    ax.set_title("Policyholder-choice sensitivity – FI book sells its freed tail bonds above 50%")
+    ax.legend(frameon=False, fontsize=8.6)
     _style(ax); _save(fig, "lc_06_policyholder_sensitivity.png")
 
-    # 07 - year-15 lump-sum liquidity vs the dedicated book + RSP -----------
-    lump_line = [float(liab.loc[s, "Lump_Sum_at_Year15"]) / 1e9 for s in shares]
-    L_line = [float(liab.loc[s, "Total_Liability_Year15"]) / 1e9 for s in shares]
+    # 07 - year-15 lump-sum liquidity waterfall by election ----------------
+    lump_line = np.array([float(liab.loc[s, "Lump_Sum_at_Year15"]) / 1e9 for s in shares])
+    ded = np.minimum(lump_line, LUMP50 / 1e9)
+    freed_med = np.array([freed0[int(s)] * float(np.median(rate_fac)) / 1e9 for s in shares])
+    rsp_p5 = np.percentile(rsp15, 5) / 1e9
+    rsp_p05 = np.percentile(rsp15, 0.5) / 1e9
+    x = np.arange(len(shares))
     fig, ax = plt.subplots(figsize=(9.6, 4.6))
-    ax.plot(shares, lump_line, color=ORANGE, lw=2.6, marker="s", ms=7,
+    ax.bar(x, ded, 0.55, color=DTEAL, label="dedicated FI delivery (risk-free)")
+    ax.bar(x, freed_med, 0.55, bottom=ded, color=TEAL, label="freed FI tail bonds (sold at mkt, median)")
+    ax.bar(x, np.maximum(0, lump_line - ded - freed_med), 0.55, bottom=ded + freed_med,
+           color=ORANGE, label="residual – from the RSP")
+    ax.plot(x, ded + freed_med + rsp_p05, color=RED, lw=1.8, ls=(0, (1, 2)), marker="v",
+            ms=6, label=f"cover with 0.5th-pct RSP (€{rsp_p05:.1f}bn)")
+    ax.plot(x, lump_line, color=INK, lw=1.6, ls=(0, (4, 3)), marker="o", ms=5,
             label="year-15 lump-sum cash demand")
-    ax.plot(shares, L_line, color="#5A6B70", lw=1.6, ls=(0, (4, 3)), marker="o", ms=5,
-            label="total year-15 liability (context)")
-    ax.axhline(LUMP50 / 1e9, color=DTEAL, lw=2.2,
-               label=f"dedicated LMP delivery (risk-free) €{LUMP50/1e9:.1f}bn")
-    for q, ls, lab in [(50, "-", "median"), (5, (0, (5, 3)), "5th pct"), (0.5, (0, (1, 2)), "0.5th pct")]:
-        ax.axhline((LUMP50 + np.percentile(rsp15, q)) / 1e9, color=TEAL, lw=1.6, ls=ls,
-                   label=f"dedicated LMP + {lab} RSP")
+    ax.set_xticks(x); ax.set_xticklabels([f"{int(s)}%" for s in shares])
     ax.set_xlabel("lump-sum take-up (%)"); ax.set_ylabel("EUR bn")
-    ax.set_title("Year-15 lump-sum liquidity: dedicated book + RSP vs the cash demand")
-    ax.legend(frameon=False, fontsize=9)
+    ax.set_title("Year-15 lump-sum liquidity waterfall: dedicated FI + freed FI bonds + RSP")
+    ax.legend(frameon=False, fontsize=8.4, loc="upper left")
     _style(ax); _save(fig, "lc_07_asset_vs_liability.png")
 
 
 def report(res):
     liab, paths, irr, a15, ann = (res["liab"], res["paths"], res["irr"],
                                   res["a15"], res["ann"])
-    rsp15 = res["rsp15"]
+    rsp15, dy15 = res["rsp15"], res["dy15"]
     L50 = float(liab.loc[50.0, "Total_Liability_Year15"])
     LUMP50 = float(liab.loc[50.0, "Lump_Sum_at_Year15"])
+    freed0 = _freed_tail_base()
+    rate_fac = np.clip(1.0 - D_FREED * dy15, 0.0, None)
     q = lambda x, p: float(np.percentile(x, p))
-    liq = lambda s: (np.mean(rsp15 < max(0.0, float(liab.loc[s, "Lump_Sum_at_Year15"]) - LUMP50)) * 100
-                     if float(liab.loc[s, "Lump_Sum_at_Year15"]) > LUMP50 else 0.0)
+
+    def liq(s):
+        excess = max(0.0, float(liab.loc[s, "Lump_Sum_at_Year15"]) - LUMP50)
+        if excess <= 0:
+            return 0.0
+        return float(np.mean(freed0[int(s)] * rate_fac + rsp15 < excess) * 100)
     L = [
         "# Case 3b - 15-year accumulation Monte-Carlo (consistent pipeline)\n",
         f"{N_SIM:,} paths, annual steps, Student-t (df {DF_T}).  Funding waterfall: "
@@ -314,13 +345,21 @@ def report(res):
         f"| P(underfunded, 100% lump) | {np.mean(a15 < float(liab.loc[100.0,'Total_Liability_Year15']))*100:.2f}% |",
         f"| mean annual portfolio return | {ann.mean()*100:.2f}% |",
         "",
-        "**Year-15 lump-sum liquidity** (LMP dedicated to the 50/50 schedule delivers "
-        f"EUR {LUMP50/1e9:.2f}bn risk-free; excess demand raised by selling the RSP):",
-        "| lump-sum election | excess over dedicated | P(RSP cannot cover) |",
-        "|---|--:|--:|",
-        f"| <= 50% (matched) | EUR 0.0bn | 0.00% |",
-        f"| 75% | EUR {(float(liab.loc[75.0,'Lump_Sum_at_Year15'])-LUMP50)/1e9:.2f}bn | {liq(75.0):.2f}% |",
-        f"| 100% | EUR {(float(liab.loc[100.0,'Lump_Sum_at_Year15'])-LUMP50)/1e9:.2f}bn | {liq(100.0):.2f}% |",
+        "**Year-15 lump-sum liquidity.**  The FI book is dedicated to the 50/50 "
+        f"schedule - it delivers EUR {LUMP50/1e9:.2f}bn at year 15 risk-free.  "
+        "Above 50% the bonds it no longer needs for the shrunk pension tail are "
+        "sold at the year-15 market price (freed-tail PV from "
+        "`results_v2/elections/summary.csv`); only the remainder is raised by "
+        "selling the RSP.",
+        "| lump-sum election | excess over dedicated | freed FI tail bonds (median) | residual from RSP | P(shortfall) |",
+        "|---|--:|--:|--:|--:|",
+        f"| <= 50% (matched) | EUR 0.00bn | - | - | 0.00% |",
+        f"| 75% | EUR {(float(liab.loc[75.0,'Lump_Sum_at_Year15'])-LUMP50)/1e9:.2f}bn | "
+        f"EUR {freed0[75]*float(np.median(rate_fac))/1e9:.2f}bn | "
+        f"EUR {max(0.0,(float(liab.loc[75.0,'Lump_Sum_at_Year15'])-LUMP50)-freed0[75]*float(np.median(rate_fac)))/1e9:.2f}bn | {liq(75.0):.2f}% |",
+        f"| 100% | EUR {(float(liab.loc[100.0,'Lump_Sum_at_Year15'])-LUMP50)/1e9:.2f}bn | "
+        f"EUR {freed0[100]*float(np.median(rate_fac))/1e9:.2f}bn | "
+        f"EUR {max(0.0,(float(liab.loc[100.0,'Lump_Sum_at_Year15'])-LUMP50)-freed0[100]*float(np.median(rate_fac)))/1e9:.2f}bn | {liq(100.0):.2f}% |",
         "",
         "Charts: presentation/assets/lc_01..07_*.png",
     ]
