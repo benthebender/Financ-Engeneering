@@ -51,7 +51,7 @@ class RBConfig:
     contribution_per_year_eur: float = 0.5 * EUR_BN
     contribution_years: int = 10
     rebalance_per_year: int = 1                 # annual, at year end
-    horizon_years: int = 20                     # accumulation (10) + bridge (11-14) + payout-phase sharing (15-20)
+    horizon_years: int = 50                     # accumulation (1-10) + bridge (11-14) + payout-phase sharing (15-50)
     profit_share_policyholder: float = 0.90     # requirement
     profit_share_start_year: float = 15.0       # no sharing before benefits begin
     weight_set: str = "Aggressive_Diversified"
@@ -175,6 +175,8 @@ def _report_and_chart(df: pd.DataFrame, rb: RBConfig) -> None:
     end_mv = df["mv_total"].iloc[-1]
     L = [
         "# Case 3b - return book: annual rebalancing + 90/10 profit sharing\n",
+        f"_RSP asset side only, projected to year {int(df.index.max())}; benefit "
+        f"outflows are paid from the LMP and are not shown here._\n",
         f"Year-end rebalancing to {rb.weight_set} ({rb.rebalance_per_year}x / "
         f"year). **Profit sharing only from year {rb.profit_share_start_year:.0f}** "
         f"(when benefits begin): years 1-{rb.profit_share_start_year-1:.0f} the "
