@@ -120,6 +120,7 @@ def simulate():
     paths = np.zeros((N_SIM, HORIZON + 1))
     paths[:, 0] = lmp + rsp
     contrib = np.zeros(HORIZON + 1)
+    lmp15 = rsp15 = None
     for t in range(1, HORIZON + 1):
         lmp = lmp * (1.0 + r_fi[:, t - 1])
         rsp = rsp * (1.0 + r_rsp[:, t - 1])
@@ -127,6 +128,8 @@ def simulate():
             rsp = rsp + CONTRIB_EUR
             contrib[t] = CONTRIB_EUR
         paths[:, t] = lmp + rsp
+        if t == 15:
+            lmp15, rsp15 = lmp.copy(), rsp.copy()
 
     # ---- annual portfolio return (contribution-stripped) ---------------
     ann = (paths[:, 1:] - contrib[1:]) / paths[:, :-1] - 1.0
@@ -139,7 +142,7 @@ def simulate():
     irr = _irr_vec(cf, a15, HORIZON)
 
     return dict(sl=sl, liab=liab, paths=paths, ann=ann, irr=irr, a15=a15,
-                r_rsp=r_rsp, r_fi=r_fi)
+                lmp15=lmp15, rsp15=rsp15, r_rsp=r_rsp, r_fi=r_fi)
 
 
 def _irr_vec(cf_wo_terminal, terminal, T, lo=-0.5, hi=1.0, iters=80):
@@ -235,32 +238,48 @@ def charts(res):
     _style(ax); _save(fig, "lc_05_funding_ratio_distribution.png")
 
     # 06 - policyholder-choice sensitivity ------------------------
+    # The FI book is cash-flow-dedicated to the 50/50 schedule, so it delivers
+    # its year-15 slice (LUMP50) by contract - risk-free, whatever rates do.
+    # A liquidity shortfall can only arise ABOVE the matched 50% election, when
+    # the excess lump demand must be raised by selling the RSP at market.
+    rsp15 = res["rsp15"]
+    LUMP50 = float(liab.loc[50.0, "Lump_Sum_at_Year15"])       # dedicated yr-15 delivery
     shares = [0.0, 25.0, 50.0, 75.0, 100.0]
     under, liq = [], []
     for s in shares:
         Ls = float(liab.loc[s, "Total_Liability_Year15"])
         lump = float(liab.loc[s, "Lump_Sum_at_Year15"])
+        excess = max(0.0, lump - LUMP50)                       # must come from the RSP
         under.append(np.mean(a15 < Ls) * 100)
-        liq.append(np.mean(a15 < lump) * 100)
+        liq.append(np.mean(rsp15 < excess) * 100 if excess > 0 else 0.0)
     fig, ax = plt.subplots(figsize=(9.6, 4.6))
-    ax.plot(shares, under, color=DTEAL, lw=2.4, marker="o", ms=7, label="underfunding probability")
-    ax.plot(shares, liq, color=ORANGE, lw=2.4, marker="s", ms=7, label="liquidity-shortfall probability")
+    ax.plot(shares, under, color=DTEAL, lw=2.4, marker="o", ms=7, label="underfunding probability (assets < liability, MtM)")
+    ax.plot(shares, liq, color=ORANGE, lw=2.4, marker="s", ms=7,
+            label="liquidity-shortfall probability (excess lump not coverable by the RSP)")
+    ax.axvline(50, color="#8AA0A6", lw=1, ls=":")
+    ax.text(51, ax.get_ylim()[1] * 0.9, "matched election\n(dedicated LMP covers the lump)",
+            fontsize=8.5, color="#5A6B70")
     ax.set_xlabel("policyholders electing the lump sum (%)")
     ax.set_ylabel("probability (%)")
-    ax.set_title("Policyholder-choice sensitivity")
-    ax.legend(frameon=False, fontsize=10)
+    ax.set_title("Policyholder-choice sensitivity – liquidity risk only above the matched 50%")
+    ax.legend(frameon=False, fontsize=8.8)
     _style(ax); _save(fig, "lc_06_policyholder_sensitivity.png")
 
-    # 07 - asset capacity vs policyholder choice -----------------
-    Lline = [float(liab.loc[s, "Total_Liability_Year15"]) / 1e9 for s in shares]
+    # 07 - year-15 lump-sum liquidity vs the dedicated book + RSP -----------
+    lump_line = [float(liab.loc[s, "Lump_Sum_at_Year15"]) / 1e9 for s in shares]
+    L_line = [float(liab.loc[s, "Total_Liability_Year15"]) / 1e9 for s in shares]
     fig, ax = plt.subplots(figsize=(9.6, 4.6))
-    ax.plot(shares, Lline, color=DTEAL, lw=2.4, marker="o", ms=7, label="year-15 liability")
-    for q, ls, lab in [(50, "-", "median"), (5, (0, (4, 2)), "5th pct"),
-                       (0.5, (0, (1, 2)), "0.5th pct")]:
-        ax.axhline(np.percentile(a15, q) / 1e9, color=TEAL, lw=1.8, ls=ls,
-                   label=f"{lab} year-15 assets")
+    ax.plot(shares, lump_line, color=ORANGE, lw=2.6, marker="s", ms=7,
+            label="year-15 lump-sum cash demand")
+    ax.plot(shares, L_line, color="#5A6B70", lw=1.6, ls=(0, (4, 3)), marker="o", ms=5,
+            label="total year-15 liability (context)")
+    ax.axhline(LUMP50 / 1e9, color=DTEAL, lw=2.2,
+               label=f"dedicated LMP delivery (risk-free) €{LUMP50/1e9:.1f}bn")
+    for q, ls, lab in [(50, "-", "median"), (5, (0, (5, 3)), "5th pct"), (0.5, (0, (1, 2)), "0.5th pct")]:
+        ax.axhline((LUMP50 + np.percentile(rsp15, q)) / 1e9, color=TEAL, lw=1.6, ls=ls,
+                   label=f"dedicated LMP + {lab} RSP")
     ax.set_xlabel("lump-sum take-up (%)"); ax.set_ylabel("EUR bn")
-    ax.set_title("Asset capacity vs policyholder choice")
+    ax.set_title("Year-15 lump-sum liquidity: dedicated book + RSP vs the cash demand")
     ax.legend(frameon=False, fontsize=9)
     _style(ax); _save(fig, "lc_07_asset_vs_liability.png")
 
@@ -268,8 +287,12 @@ def charts(res):
 def report(res):
     liab, paths, irr, a15, ann = (res["liab"], res["paths"], res["irr"],
                                   res["a15"], res["ann"])
+    rsp15 = res["rsp15"]
     L50 = float(liab.loc[50.0, "Total_Liability_Year15"])
+    LUMP50 = float(liab.loc[50.0, "Lump_Sum_at_Year15"])
     q = lambda x, p: float(np.percentile(x, p))
+    liq = lambda s: (np.mean(rsp15 < max(0.0, float(liab.loc[s, "Lump_Sum_at_Year15"]) - LUMP50)) * 100
+                     if float(liab.loc[s, "Lump_Sum_at_Year15"]) > LUMP50 else 0.0)
     L = [
         "# Case 3b - 15-year accumulation Monte-Carlo (consistent pipeline)\n",
         f"{N_SIM:,} paths, annual steps, Student-t (df {DF_T}).  Funding waterfall: "
@@ -290,6 +313,14 @@ def report(res):
         f"| P(underfunded, 50/50) | {np.mean(a15 < L50)*100:.2f}% |",
         f"| P(underfunded, 100% lump) | {np.mean(a15 < float(liab.loc[100.0,'Total_Liability_Year15']))*100:.2f}% |",
         f"| mean annual portfolio return | {ann.mean()*100:.2f}% |",
+        "",
+        "**Year-15 lump-sum liquidity** (LMP dedicated to the 50/50 schedule delivers "
+        f"EUR {LUMP50/1e9:.2f}bn risk-free; excess demand raised by selling the RSP):",
+        "| lump-sum election | excess over dedicated | P(RSP cannot cover) |",
+        "|---|--:|--:|",
+        f"| <= 50% (matched) | EUR 0.0bn | 0.00% |",
+        f"| 75% | EUR {(float(liab.loc[75.0,'Lump_Sum_at_Year15'])-LUMP50)/1e9:.2f}bn | {liq(75.0):.2f}% |",
+        f"| 100% | EUR {(float(liab.loc[100.0,'Lump_Sum_at_Year15'])-LUMP50)/1e9:.2f}bn | {liq(100.0):.2f}% |",
         "",
         "Charts: presentation/assets/lc_01..07_*.png",
     ]

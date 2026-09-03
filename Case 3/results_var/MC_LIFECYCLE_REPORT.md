@@ -16,4 +16,11 @@
 | P(underfunded, 100% lump) | 4.95% |
 | mean annual portfolio return | 6.25% |
 
+**Year-15 lump-sum liquidity** (LMP dedicated to the 50/50 schedule delivers EUR 5.65bn risk-free; excess demand raised by selling the RSP):
+| lump-sum election | excess over dedicated | P(RSP cannot cover) |
+|---|--:|--:|
+| <= 50% (matched) | EUR 0.0bn | 0.00% |
+| 75% | EUR 2.83bn | 2.71% |
+| 100% | EUR 5.65bn | 12.56% |
+
 Charts: presentation/assets/lc_01..07_*.png
