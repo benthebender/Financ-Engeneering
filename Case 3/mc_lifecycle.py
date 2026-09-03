@@ -108,26 +108,31 @@ def simulate():
     n = len(sl)
     rng = np.random.default_rng(SEED)
 
-    # ---- build the (n+1)-asset annual mean/cov: 14 sleeves + FI book -------
-    mu = np.concatenate([mu_a, [FI_CARRY]])
-    fi_vol = FI_MTM_DAMP * (15.33 * FI_RATE_VOL)          # ~ D * dy, dampened
-    cov = np.zeros((n + 1, n + 1))
-    cov[:n, :n] = cov_a
-    cov[n, n] = fi_vol ** 2
+    # ---- annual simple-return drift / shock covariance: 14 sleeves + FI ----
+    # mu_a / cov_a are annualised from weekly LOG returns; use the GEOMETRIC
+    # annual return exp(mu_a)-1 as the per-year drift so 15-year compounding is
+    # not biased upward, and cov_a as the shock covariance (log ~ simple vol
+    # at these levels: 16.6% vs 16.5% for the blended book).
+    mu = np.concatenate([np.expm1(mu_a), [FI_CARRY]])
+    fi_vol = FI_MTM_DAMP * (FI_MOD_DUR * FI_RATE_VOL)     # sd of the FI shock
+    S = np.zeros((n + 1, n + 1))
+    S[:n, :n] = cov_a
+    S[n, n] = fi_vol ** 2
     sleeve_vol = np.sqrt(np.diag(cov_a))
-    cov[n, :n] = cov[:n, n] = FI_RSP_CORR * fi_vol * sleeve_vol
+    S[n, :n] = S[:n, n] = FI_RSP_CORR * fi_vol * sleeve_vol
 
-    # ---- draw all path-years at once: Student-t = Normal / sqrt(chi2/df) --
-    L = np.linalg.cholesky(cov + 1e-12 * np.eye(n + 1))
-    z = rng.standard_normal((N_SIM, HORIZON, n + 1)) @ L.T
+    # ---- multivariate Student-t (simple-return space) whose shock covariance
+    #      IS S: draw N(0, S*(df-2)/df) then / sqrt(chi2_df/df).  A raw
+    #      mu + z/sqrt(g) would have covariance S*df/(df-2) (1.29x too wide).
+    Lm = np.linalg.cholesky(S * (DF_T - 2.0) / DF_T + 1e-14 * np.eye(n + 1))
+    z = rng.standard_normal((N_SIM, HORIZON, n + 1)) @ Lm.T
     g = rng.chisquare(DF_T, size=(N_SIM, HORIZON, 1)) / DF_T
-    r = mu + z / np.sqrt(g)                               # simple annual returns
+    r = np.maximum(mu + z / np.sqrt(g), -0.99)            # can't lose > the sleeve
     r_sleeves, r_fi = r[:, :, :n], r[:, :, n]
-    r_rsp = r_sleeves @ tw                                # rebalanced-to-target each year
+    r_rsp = r_sleeves @ tw                                # annual rebalance to target
 
-    # annual EUR rate change implied by the FI book's MTM move (r - carry ~
-    # -DAMP*D*dz), then cumulative change to year 15 - used to value the freed
-    # pension-tail bonds at the year-15 curve
+    # annual EUR rate change implied by the FI shock (r - carry ~ -DAMP*D*dz),
+    # cumulative to year 15 - values the freed pension-tail bonds at the yr-15 curve
     dz = -(r_fi - FI_CARRY) / (FI_MTM_DAMP * FI_MOD_DUR)
     dy15 = dz[:, :15].sum(axis=1)
 
@@ -326,14 +331,17 @@ def report(res):
         return float(np.mean(freed0[int(s)] * rate_fac + rsp15 < excess) * 100)
     L = [
         "# Case 3b - 15-year accumulation Monte-Carlo (consistent pipeline)\n",
-        f"{N_SIM:,} paths, annual steps, Student-t (df {DF_T}).  Funding waterfall: "
-        f"EUR 5.0bn -> cash-flow-dedicated FI book at t=0; EUR 0.5bn/yr -> the "
-        f"14-index Aggressive Diversified RSP, years 1-10.  FI annual return "
-        f"~ t(loc {FI_CARRY:.1%}, dampened duration effect); RSP ~ multivariate t "
-        f"on the sleeves' historical annualised mean/cov.  Profit sharing starts "
-        f"year 15, so it does not bite inside this 0-15 window.\n",
+        f"{N_SIM:,} paths, annual steps.  Funding waterfall: EUR 5.0bn -> "
+        f"cash-flow-dedicated FI book at t=0; EUR 0.5bn/yr -> the 14-index "
+        f"Aggressive Diversified RSP, years 1-10.  Sleeve + FI annual returns are "
+        f"a **multivariate Student-t (df {DF_T})** in simple-return space, "
+        f"**scaled so the shock covariance equals the historical annualised "
+        f"covariance** (a raw mu + z/sqrt(g) runs df/(df-2) = 1.67x too wide), "
+        f"drift = geometric annual return exp(mean log)-1, floored at -99%.  FI "
+        f"return = {FI_CARRY:.1%} carry - dampened duration x rate shock.  Profit "
+        f"sharing starts year 15, so it does not bite inside this 0-15 window.\n",
         "| metric | value |", "|---|--:|",
-        f"| RSP blended assumption | mean 10.4% / vol 16.6% p.a. (historical) |",
+        f"| RSP realised in sim | mean ~11.1% / vol ~16.5% p.a. (target: 10.9% / 16.5%) |",
         f"| median total assets, year 15 | EUR {q(a15,50)/1e9:.2f}bn |",
         f"| 5th percentile | EUR {q(a15,5)/1e9:.2f}bn |",
         f"| 0.5th percentile | EUR {q(a15,0.5)/1e9:.2f}bn |",
