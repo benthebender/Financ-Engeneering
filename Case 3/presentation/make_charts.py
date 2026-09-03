@@ -55,13 +55,18 @@ def _save(fig, name):
 
 
 # --------------------------------------------------------------------------- #
+def _book_cf():
+    d = pd.read_csv(CASE / "results_v2" / "book_cf_wide.csv")   # held two-stage book
+    return d[d["year"] <= 50].rename(columns={"year": "projection_year"})
+
+
 def cf_annual():
-    d = pd.read_csv(CASE / "results" / "cashflow_matching.csv")
+    d = _book_cf()
     d = d[d["projection_year"] <= 40]
     x = d["projection_year"].to_numpy()
     fig, ax = plt.subplots(figsize=(9.6, 4.2))
-    ax.bar(x - 0.2, d["asset_cf_eur"] / 1e9, 0.4, color=TEAL, label="Asset cash flows (bond coupons + redemptions)")
-    ax.bar(x + 0.2, d["liability_cf_eur"] / 1e9, 0.4, color=ORANGE, label="Guaranteed liability cash flows")
+    ax.bar(x - 0.2, d["asset_cf_eur"] / 1e9, 0.4, color=TEAL, label="FI book cash flows (coupons + redemptions)")
+    ax.bar(x + 0.2, d["liability_cf_eur"] / 1e9, 0.4, color=ORANGE, label="guaranteed liability cash flows")
     ax.axvspan(0.5, 10.5, color=TEALL, alpha=0.20, lw=0)
     ax.text(5.5, ax.get_ylim()[1] * 0.92, "contributions in\n(€0.5bn/yr)", ha="center", va="top",
             fontsize=10, color=DTEAL)
@@ -74,17 +79,17 @@ def cf_annual():
 
 
 def cf_cumulative():
-    d = pd.read_csv(CASE / "results" / "cashflow_matching.csv")
+    d = _book_cf()
     x = d["projection_year"].to_numpy()
+    ca = np.cumsum(d["asset_cf_eur"].to_numpy()) / 1e9
+    cl = np.cumsum(d["liability_cf_eur"].to_numpy()) / 1e9
     fig, ax = plt.subplots(figsize=(9.6, 4.2))
-    ax.plot(x, d["cumulative_asset_cf_eur"] / 1e9, color=TEAL, lw=2.6, label="cumulative asset cash flow")
-    ax.plot(x, d["cumulative_liability_cf_eur"] / 1e9, color=ORANGE, lw=2.6,
-            label="cumulative liability cash flow")
-    ax.fill_between(x, d["cumulative_asset_cf_eur"] / 1e9, d["cumulative_liability_cf_eur"] / 1e9,
-                    color=GRID, alpha=0.7)
+    ax.plot(x, ca, color=TEAL, lw=2.6, label="cumulative FI-book cash flow")
+    ax.plot(x, cl, color=ORANGE, lw=2.6, label="cumulative liability cash flow")
+    ax.fill_between(x, ca, cl, color=GRID, alpha=0.7)
     ax.set_xlabel("projection year")
     ax.set_ylabel("EUR bn, cumulative")
-    ax.set_title("Cumulative coverage – bond book + reinvestment vs. guaranteed outflows")
+    ax.set_title("Cumulative coverage – FI book (undiscounted) vs. guaranteed outflows")
     ax.legend(frameon=False, fontsize=10, loc="upper left")
     _style(ax)
     _save(fig, "cf_cumulative.png")
@@ -279,6 +284,7 @@ def rsp_weights():
 if __name__ == "__main__":
     cf_annual()
     cf_cumulative()
+    cf_match_fi()
     election()
     profit_share()
     var_bridge()
