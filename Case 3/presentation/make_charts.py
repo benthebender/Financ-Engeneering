@@ -138,6 +138,70 @@ def cf_match_fi(reinv: float = 0.015):
     _save(fig, "cf_match_fi.png")
 
 
+def portfolio_composition():
+    """Whole-portfolio composition: the EUR 10.0bn balance sheet (LMP + RSP)
+    and the hedge overlays (notional, off balance sheet).
+    Numbers from case3_model.build_book(Config(irs_receiver=((15,2.8bn),(30,0.3bn))))."""
+    SLATE = "#6B7B80"
+    LORANGE = "#E7A98D"
+
+    assets = [("Liability-Matching Portfolio – EUR govt / SSA / covered bonds", 5.00, DTEAL),
+              ("Return portfolio – equity (9 indices)", 4.60, TEAL),
+              ("Return portfolio – high yield", 0.20, TEALL),
+              ("Return portfolio – gold / rates / Asia-Pac", 0.20, SLATE)]
+    hedges = [("FX swaps – every USD sleeve rolled to EUR", 4.65, ORANGE),
+              ("Receiver IRS – 15y 2.8bn + 30y 0.3bn (notional not exchanged)", 3.10, LORANGE),
+              ("Equity-futures overlay – rule: 0 % (up to ~1.4 discretionary)", 0.0, SLATE)]
+
+    fig, ax = plt.subplots(figsize=(9.8, 4.0))
+    for data, y, tot_lab in [(assets, 0.85, "Assets on balance sheet  =  EUR 10.0bn"),
+                             (hedges, 0.0, "Hedge overlays  =  EUR 7.8bn notional (off balance sheet)")]:
+        left, flip = 0.0, -1
+        for name, val, col in data:
+            if val <= 0:
+                ax.barh(y, 0.12, left=left, height=0.5, color="none", edgecolor=col,
+                        lw=1.4, hatch="////")
+                ax.annotate("0 %", xy=(left + 0.06, y), xytext=(left + 0.06, y + 0.52),
+                            ha="center", fontsize=8.5, color=SLATE,
+                            arrowprops=dict(arrowstyle="-", color=SLATE, lw=0.7))
+                left += 0.12
+                continue
+            ax.barh(y, val, left=left, height=0.5, color=col, edgecolor="white", lw=1.6)
+            lab = f"€{val:.2f}bn"
+            if val >= 0.7:
+                ax.text(left + val / 2, y, lab, va="center", ha="center", fontsize=9.5,
+                        color="white" if col in (DTEAL, TEAL, ORANGE) else INK, fontweight="bold")
+            else:                                     # narrow segment - call it out above
+                xo = 0.55 * flip
+                ax.annotate(lab, xy=(left + val / 2, y + 0.24),
+                            xytext=(left + val / 2 + xo, y + 0.62),
+                            ha="center", fontsize=8.5, color=INK,
+                            arrowprops=dict(arrowstyle="-", color="#8AA0A6", lw=0.7))
+                flip *= -1
+            left += val
+        ax.text(0, y + 0.40, tot_lab, va="bottom", ha="left", fontsize=10,
+                color=NAVY, fontweight="bold")
+
+    from matplotlib.patches import Patch
+    keys = ([Patch(fc=c, ec="white") for _, _, c in assets]
+            + [Patch(fc=ORANGE, ec="white"), Patch(fc=LORANGE, ec="white"),
+               Patch(fc="none", ec=SLATE, hatch="////")])
+    labs = [n for n, _, _ in assets] + [n for n, _, _ in hedges]
+    ax.legend(keys, labs, loc="upper center", bbox_to_anchor=(0.5, -0.30),
+              ncol=2, frameon=False, fontsize=7.8, handlelength=1.4, columnspacing=1.2)
+
+    ax.set_ylim(-0.78, 1.7)
+    ax.set_yticks([])
+    ax.set_xlim(0, 10.6)
+    ax.set_xlabel("EUR bn")
+    ax.set_title("Whole-portfolio composition and hedge overlays")
+    for sp in ("top", "right", "left"):
+        ax.spines[sp].set_visible(False)
+    ax.grid(color=GRID, lw=0.8, axis="x")
+    ax.set_axisbelow(True)
+    _save(fig, "portfolio_composition.png")
+
+
 def election():
     d = pd.read_excel(CASE / "mixed_liability_scenarios.xlsx", sheet_name="Scenario Summary")
     lab = [f"{int(p)}%" for p in d["Lump_Sum_%"]]
@@ -285,6 +349,7 @@ if __name__ == "__main__":
     cf_annual()
     cf_cumulative()
     cf_match_fi()
+    portfolio_composition()
     election()
     profit_share()
     var_bridge()
